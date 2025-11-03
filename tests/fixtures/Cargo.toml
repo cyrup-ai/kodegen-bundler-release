@@ -1,0 +1,15 @@
+[package]
+name = "mock-binary"
+version = "0.1.0"
+edition = "2021"
+
+# Empty workspace table to prevent this from being detected as part of parent workspace
+[workspace]
+
+[[bin]]
+name = "mock-kodegen"
+path = "src/main.rs"
+
+[[bin]]
+name = "mock-kodegend"
+path = "src/daemon.rs"

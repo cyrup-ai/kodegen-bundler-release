@@ -1,0 +1,149 @@
+[package]
+name = "kodegen_bundler_release"
+version = "0.1.0"
+edition = "2024"
+description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
+authors = ["KODEGEN.ᴀɪ"]
+homepage = "https://kodegen.ai"
+repository = "https://github.com/cyrup-ai/kodegen-bundler-release"
+readme = "README.md"
+categories = ["development-tools", "command-line-utilities", "api-bindings"]
+keywords = [
+    "mcp",
+    "terminal",
+    "agent",
+    "filesystem",
+    "claude"
+]
+license = "Apache-2.0 OR MIT"
+
+[[bin]]
+name = "kodegen_bundler_release"
+path = "src/main.rs"
+
+[lib]
+name = "kodegen_bundler_release"
+path = "src/lib.rs"
+
+[dependencies]
+# Git operations using pure Rust (no CLI)
+gix = "0.74"
+# Explicit dependencies to fix Docker build transitive dependency resolution
+gix-lock = "19"
+gix-tempfile = "19"
+gix-utils = "0.3"
+
+# Shared Git operations package
+kodegen_tools_git = { version = "0.1" }
+
+# GitHub API integration for releases
+kodegen_tools_github = { version = "0.1" }
+
+# Code signing for macOS artifacts
+kodegen_bundler_sign = { version = "0.1" }
+
+# Binary content for asset upload
+bytes = "1"
+
+# Format-preserving TOML editing
+toml_edit = "0.23"
+
+# Semantic version parsing and manipulation
+semver = { version = "1", features = ["serde"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "cargo"] }
+
+# Error handling and context
+anyhow = "1"
+thiserror = "2"
+
+# Async runtime for process execution
+tokio = { version = "1", features = ["full"] }
+
+# Async HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Async utilities
+tokio-util = { version = "0.7", features = ["io"] }
+
+# JSON serialization for state persistence
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Date and time handling for state tracking
+chrono = { version = "0.4", features = ["serde"] }
+
+# Dependency graph analysis
+petgraph = "0.8"
+
+# TOML parsing and manipulation
+toml = "0.9"
+
+# Process execution
+which = "8"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# System resource detection (for Docker container limits)
+sysinfo = "0.37"
+
+# CPU count detection (for Docker container limits)
+num_cpus = "1"
+
+# Base64 encoding/decoding for certificate handling
+base64 = "0.22"
+
+# TLS support for GitHub API (octocrab/reqwest)
+rustls = { version = "0.23", features = ["ring"] }
+
+# Path utilities
+path-absolutize = "3"
+
+# Workspace integration 
+sugars_collections = { version = "0.5" }
+
+# Bundler dependencies
+handlebars = "6"          # Template rendering
+image = "0.25"              # Icon conversion
+tar = "0.4"                 # Archive creation
+flate2 = "1"              # Compression
+uuid = { version = "1", features = ["v4", "v5"] }  # GUID generation
+md5 = "0.8"                 # Checksums
+sha1 = "0.10"               # SHA-1 hashing
+sha2 = "0.10"               # SHA-256 hashing
+walkdir = "2"             # Directory traversal
+wait-timeout = "0.2"        # Process timeout for cleanup
+hex = "0.4"                 # Hex encoding
+glob = "0.3"                # Pattern matching
+zip = "6"                 # Archive creation errors
+async_zip = { version = "0.0", features = ["tokio", "tokio-fs"] }  # Async ZIP archive extraction
+futures-lite = "2"          # Async I/O traits for async_zip
+goblin = "0.10"              # Binary parsing errors
+url = "2"                 # URL parsing errors
+regex = "1"              # Regular expression errors (macOS/Windows)
+dirs = "6"                # Cross-platform cache directory
+cyrup_termcolor = "2"
+
+[target.'cfg(unix)'.dependencies]
+users = "0.11"              # Safe user/group ID retrieval for Docker security
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ar = "0.9"                  # AR archive for .deb
+rpm = "0.18"                # RPM package creation
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"               # Info.plist handling
+icns = "0.3"                # ICNS creation
+time = "0.3"                # Timestamp handling
+tempfile = "3"           # Temporary directory for DMG staging
+
+[target.'cfg(windows)'.dependencies]
+ico = "0.4"                 # ICO icon creation
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
