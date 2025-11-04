@@ -161,10 +161,13 @@ impl GitManager {
                     // WIP committed successfully
                 }
                 Err(e) => {
-                    // Failed to commit WIP - return to main and error
-                    let _ = self.repository.checkout_branch("main").await;
+                    // Failed to commit WIP - try to return to main and report status
+                    let recovery_status = self.safe_return_to_main().await;
                     return Err(GitError::CommitFailed {
-                        reason: format!("Failed to commit work-in-progress: {}", e),
+                        reason: format!(
+                            "Failed to commit work-in-progress: {}. Recovery: {}",
+                            e, recovery_status
+                        ),
                     }
                     .into());
                 }
@@ -173,9 +176,13 @@ impl GitManager {
 
         // Step 3: Switch to main branch
         if let Err(e) = self.repository.checkout_branch("main").await {
-            let _ = self.repository.checkout_branch("main").await;
+            // Don't retry the same failing operation - just report current state
+            let current_state = self.get_current_state_for_error().await;
             return Err(GitError::BranchOperationFailed {
-                reason: format!("Failed to checkout main branch: {}", e),
+                reason: format!(
+                    "Failed to checkout main branch: {}. Current state: {}",
+                    e, current_state
+                ),
             }
             .into());
         }
@@ -187,11 +194,11 @@ impl GitManager {
             && !is_release_branch
             && let Err(e) = self.repository.merge_branch(&original_branch_name).await
         {
-            let _ = self.repository.checkout_branch("main").await;
+            let recovery_status = self.safe_return_to_main().await;
             return Err(GitError::BranchOperationFailed {
                 reason: format!(
-                    "Failed to merge branch '{}' into main: {}",
-                    original_branch_name, e
+                    "Failed to merge branch '{}' into main: {}. Recovery: {}",
+                    original_branch_name, e, recovery_status
                 ),
             }
             .into());
@@ -201,9 +208,12 @@ impl GitManager {
         let release_branch = match self.repository.create_release_branch(version).await {
             Ok(branch) => branch,
             Err(e) => {
-                let _ = self.repository.checkout_branch("main").await;
+                let recovery_status = self.safe_return_to_main().await;
                 return Err(GitError::BranchOperationFailed {
-                    reason: format!("Failed to create release branch: {}", e),
+                    reason: format!(
+                        "Failed to create release branch: {}. Recovery: {}",
+                        e, recovery_status
+                    ),
                 }
                 .into());
             }
@@ -218,9 +228,12 @@ impl GitManager {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = self.repository.checkout_branch("main").await;
+                let recovery_status = self.safe_return_to_main().await;
                 return Err(GitError::CommitFailed {
-                    reason: format!("Failed to create release commit: {}", e),
+                    reason: format!(
+                        "Failed to create release commit: {}. Recovery: {}",
+                        e, recovery_status
+                    ),
                 }
                 .into());
             }
@@ -236,9 +249,12 @@ impl GitManager {
         {
             Ok(t) => t,
             Err(e) => {
-                let _ = self.repository.checkout_branch("main").await;
+                let recovery_status = self.safe_return_to_main().await;
                 return Err(GitError::CommitFailed {
-                    reason: format!("Failed to create version tag: {}", e),
+                    reason: format!(
+                        "Failed to create version tag: {}. Recovery: {}",
+                        e, recovery_status
+                    ),
                 }
                 .into());
             }
@@ -258,11 +274,11 @@ impl GitManager {
                     Some(push_info)
                 }
                 Err(e) => {
-                    let _ = self.repository.checkout_branch("main").await;
+                    let recovery_status = self.safe_return_to_main().await;
                     return Err(GitError::PushFailed {
                         reason: format!(
-                            "Failed to push release branch: {}. Local changes preserved.",
-                            e
+                            "Failed to push release branch: {}. Local changes preserved. Recovery: {}",
+                            e, recovery_status
                         ),
                     }
                     .into());
@@ -489,6 +505,52 @@ impl GitManager {
             recent_commit_count: recent_commits.len(),
             has_upstream: current_branch.upstream.is_some(),
         })
+    }
+
+    /// Safely attempt to return to main branch, tracking recovery status
+    /// 
+    /// This method attempts to checkout main and reports the outcome.
+    /// If checkout fails, it tries to determine the current branch state
+    /// to provide actionable error information.
+    async fn safe_return_to_main(&self) -> String {
+        match self.repository.checkout_branch("main").await {
+            Ok(()) => {
+                "successfully returned to main branch".to_string()
+            }
+            Err(checkout_err) => {
+                // Recovery failed - try to determine current state for error reporting
+                match self.repository.get_current_branch().await {
+                    Ok(branch_info) => {
+                        format!(
+                            "FAILED to return to main branch: {}. Repository is currently on branch '{}'. Manual intervention required: run 'git checkout main' or resolve the underlying issue",
+                            checkout_err,
+                            branch_info.name
+                        )
+                    }
+                    Err(_) => {
+                        format!(
+                            "FAILED to return to main branch: {}. Could not determine current branch. Manual intervention required: run 'git status' to check repository state",
+                            checkout_err
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get current repository state for error reporting
+    /// 
+    /// Used when we don't want to attempt recovery (e.g., when checkout main itself failed)
+    /// but need to report where the repository currently is.
+    async fn get_current_state_for_error(&self) -> String {
+        match self.repository.get_current_branch().await {
+            Ok(branch_info) => {
+                format!("repository is currently on branch '{}'", branch_info.name)
+            }
+            Err(_) => {
+                "repository state unknown (could not determine current branch)".to_string()
+            }
+        }
     }
 }
 

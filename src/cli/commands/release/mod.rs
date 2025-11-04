@@ -5,17 +5,8 @@
 
 mod r#impl;
 
-use crate::cli::{Args, Command, RuntimeConfig};
-use crate::error::{ReleaseError, Result};
-use crate::state::has_active_release_at;
-use crate::workspace::{SharedWorkspaceInfo, WorkspaceInfo, WorkspaceValidator};
-use std::sync::Arc;
-
-use super::temp_clone::{
-    clear_active_temp_path, clone_main_to_temp_for_release, save_active_temp_path,
-};
-use r#impl::perform_release_impl;
-use std::path::Path;
+use crate::cli::{Args, RuntimeConfig};
+use crate::error::{CliError, ReleaseError, Result};
 
 /// Options for configuring the release process
 #[derive(Clone)]
@@ -24,202 +15,90 @@ pub(super) struct ReleaseOptions {
     pub dry_run: bool,
     pub no_push: bool,
     pub registry: Option<String>,
-    pub package_delay: u64,
-    pub concurrent_publishes: Option<usize>,
-    pub github_release: bool,
     pub github_repo: Option<String>,
-    pub github_draft: bool,
-    pub release_notes: Option<std::path::PathBuf>,
-    pub with_bundles: bool,
-    pub upload_bundles: bool,
-    pub continue_on_github_error: bool,
 }
 
-/// Execute release in temp directory with guaranteed cleanup on all code paths.
-///
-/// This helper ensures that ANY error (from save_active_temp_path, workspace analysis,
-/// or the actual release) flows through a single Result that can be handled after
-/// guaranteed cleanup runs.
-async fn execute_release_in_temp(
-    temp_dir: &Path,
-    config: &RuntimeConfig,
-    options: &ReleaseOptions,
-) -> Result<i32> {
-    // Save temp path for resume support (can fail)
-    save_active_temp_path(temp_dir)?;
 
-    config.println("🚀 Starting release in isolated environment");
-    config.println("   Your working directory will not be modified");
-
-    // Re-analyze workspace from temp clone (can fail)
-    let workspace: SharedWorkspaceInfo = Arc::new(WorkspaceInfo::analyze(temp_dir)?);
-
-    // Perform release in temp directory (can fail)
-    perform_release_impl(temp_dir, workspace, config, options).await
-}
 
 /// Execute release command
 pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Result<i32> {
-    if let Command::Release {
-        bump_type,
-        dry_run,
-        skip_validation,
-        allow_dirty: _,
-        no_push,
-        registry,
-        package_delay,
-        max_retries: _,
-        timeout: _,
-        concurrent_publishes,
-        sequential,
-        no_github_release,
-        github_repo,
-        github_draft,
-        release_notes,
-        no_bundles,
-        no_upload_bundles,
-        continue_on_github_error,
-        keep_temp,
-        no_clear_runway,
-    } = &args.command
-    {
-        config.verbose_println("Starting release operation...");
+    // 1. Parse and resolve repository source
+    config.println("📦 Resolving repository source...");
+    let source_parsed = crate::source::RepositorySource::parse(&args.source)?;
+    let resolved = source_parsed.resolve().await?;
+    config.verbose_println(&format!("✓ Repository: {}", resolved.path.display()));
 
-        // Check for existing release state
-        if has_active_release_at(&config.state_file_path) {
-            return Err(ReleaseError::State(crate::error::StateError::SaveFailed {
-                reason: "Another release is in progress. Use 'resume' or 'cleanup' first"
-                    .to_string(),
-            }));
+    // 2. Extract metadata from single Cargo.toml (NO workspace analysis)
+    let cargo_toml = resolved.path.join("Cargo.toml");
+    let metadata = crate::metadata::extract_metadata(&cargo_toml)?;
+    let binary_name = crate::metadata::discover_binary(&cargo_toml)?;
+    
+    config.verbose_println(&format!("✓ Package: {}", metadata.name));
+    config.verbose_println(&format!("✓ Binary: {}", binary_name));
+
+    // 3. Simple validation (git status check - NO workspace validation)
+    if !args.skip_validation {
+        config.println("🔍 Validating repository...");
+        // Simple git check - repository should be clean
+        let git_status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&resolved.path)
+            .output()
+            .map_err(|e| {
+                ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "git_status".to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
+        
+        if !git_status.stdout.is_empty() {
+            config.warning_println("⚠️  Working directory has uncommitted changes");
+            config.warning_println("   This may cause issues with the release process");
         }
+    }
 
-        // Analyze workspace
-        config.verbose_println("Analyzing workspace...");
-        let workspace: SharedWorkspaceInfo =
-            Arc::new(WorkspaceInfo::analyze(&config.workspace_path)?);
+    // 4. Create temp clone for isolated execution
+    config.println("📁 Creating temporary clone...");
+    let temp_dir = if resolved.is_temp {
+        resolved.path.clone()
+    } else {
+        super::temp_clone::clone_main_to_temp_for_release(&resolved.path).await?
+    };
+    let temp_dir_pathbuf = temp_dir.to_path_buf();
 
-        // Validate workspace if not skipped
-        if !skip_validation {
-            config.section("Workspace Validation");
-            let validator = WorkspaceValidator::new(workspace.clone())?;
+    // 5. Build release options (simplified)
+    let options = ReleaseOptions {
+        bump_type: args.bump_type.clone(),
+        dry_run: args.dry_run,
+        no_push: args.no_push,
+        registry: args.registry.clone(),
+        github_repo: args.github_repo.clone(),
+    };
 
-            config.progress("Checking git repository state...");
-            let validation = validator.validate().await?;
+    // 6. Execute release in temp (NO workspace parameter)
+    let result = r#impl::perform_release_single_repo(
+        &temp_dir_pathbuf,
+        metadata,
+        binary_name,
+        config,
+        &options
+    ).await;
 
-            if !validation.success {
-                config.error_println("Workspace validation failed:");
-                for error in &validation.critical_errors {
-                    config.error_println(&format!("  • {}", error));
-                }
-                return Err(ReleaseError::Workspace(
-                    crate::error::WorkspaceError::InvalidStructure {
-                        reason: "Workspace validation failed".to_string(),
-                    },
+    // 7. Cleanup temp directory
+    if !args.dry_run && !resolved.is_temp {
+        match std::fs::remove_dir_all(&temp_dir_pathbuf) {
+            Ok(()) => {
+                config.verbose_println("✅ Temp clone cleaned up");
+            }
+            Err(e) => {
+                config.warning_println(&format!("Failed to cleanup temp directory: {}", e));
+                config.warning_println(&format!(
+                    "You may need to manually remove: {}",
+                    temp_dir_pathbuf.display()
                 ));
             }
-
-            if !validation.warnings.is_empty() && config.is_verbose() {
-                config.warning_println("Workspace validation warnings:");
-                for warning in &validation.warnings {
-                    config.warning_println(&format!("  • {}", warning));
-                }
-            }
         }
-
-        // Clear runway (remove orphaned branches/tags from failed releases)
-        if !no_clear_runway {
-            config.println("🛫 Checking runway for release...");
-            match super::runway::clear_runway_for_version(
-                &config.workspace_path,
-                &workspace,
-                bump_type,
-                config,
-            )
-            .await
-            {
-                Ok(result) => {
-                    if result.cleared_anything() {
-                        config.println(&result.format_result());
-                    } else {
-                        config.verbose_println(&result.format_result());
-                    }
-                }
-                Err(e) => {
-                    config.warning_println(&format!("Failed to clear runway: {}", e));
-                    config.warning_println("Continuing with release anyway...");
-                }
-            }
-        }
-
-        // Clone main branch to temp for isolated execution
-        config.println("🔄 Cloning main branch to isolated environment...");
-        let temp_dir = clone_main_to_temp_for_release(&config.workspace_path).await?;
-        config.println(&format!("   Temp location: {}", temp_dir.display()));
-
-        // Create release options
-        let options = ReleaseOptions {
-            bump_type: bump_type.clone(),
-            dry_run: *dry_run,
-            no_push: *no_push,
-            registry: registry.clone(),
-            package_delay: *package_delay,
-            concurrent_publishes: if *sequential {
-                Some(1)
-            } else {
-                Some(*concurrent_publishes)
-            },
-            github_release: !no_github_release, // Inverted: default is TRUE unless --no-github-release
-            github_repo: github_repo.clone(),
-            github_draft: *github_draft,
-            release_notes: release_notes.clone(),
-            with_bundles: !no_bundles, // Inverted: default is TRUE unless --no-bundles
-            upload_bundles: !no_upload_bundles, // Inverted: default is TRUE unless --no-upload-bundles
-            continue_on_github_error: *continue_on_github_error,
-        };
-
-        // Execute release in temp directory - ALL errors flow through release_result
-        // This ensures cleanup ALWAYS runs regardless of which operation fails
-        let release_result = execute_release_in_temp(&temp_dir, config, &options).await;
-
-        // ALWAYS cleanup temp directory (runs whether success or failure)
-        if !keep_temp {
-            // Retry cleanup with exponential backoff to handle file locks and async processes
-            let mut attempts = 0;
-            let max_attempts = 5;
-            loop {
-                match std::fs::remove_dir_all(&temp_dir) {
-                    Ok(()) => {
-                        config.verbose_println("✅ Temp clone cleaned up");
-                        break;
-                    }
-                    Err(_) if attempts < max_attempts - 1 => {
-                        attempts += 1;
-                        let delay = std::time::Duration::from_millis(100 * 2_u64.pow(attempts as u32));
-                        tokio::time::sleep(delay).await;
-                    }
-                    Err(e) => {
-                        config.warning_println(&format!("Failed to cleanup temp directory: {}", e));
-                        config.warning_println(&format!(
-                            "You may need to manually remove: {}",
-                            temp_dir.display()
-                        ));
-                        break;
-                    }
-                }
-            }
-            // Clear temp path tracking (ignore errors)
-            let _ = clear_active_temp_path();
-        } else {
-            config.println(&format!(
-                "🔍 Temp clone kept for debugging at: {}",
-                temp_dir.display()
-            ));
-            config.println("   Use 'cleanup' command to remove it later");
-        }
-
-        // Return the original result (success or error)
-        release_result
-    } else {
-        unreachable!("execute_release called with non-Release command");
     }
+
+    result
 }

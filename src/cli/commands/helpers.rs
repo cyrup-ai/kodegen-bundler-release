@@ -2,7 +2,7 @@
 
 use crate::error::{CliError, ReleaseError, Result};
 use crate::git::GitManager;
-use crate::workspace::WorkspaceInfo;
+use std::path::PathBuf;
 
 /// Parse GitHub repository string into owner/repo tuple
 #[allow(dead_code)]
@@ -95,47 +95,41 @@ pub(super) async fn detect_github_repo(git_manager: &GitManager) -> Result<(Stri
 
 /// Create distributable bundles for the release
 pub(super) async fn create_bundles(
-    workspace: &WorkspaceInfo,
+    repo_path: &PathBuf,
+    metadata: &crate::metadata::PackageMetadata,
+    binary_name: &str,
     version: &semver::Version,
     _config: &crate::cli::RuntimeConfig,
 ) -> Result<Vec<crate::bundler::BundledArtifact>> {
     use crate::bundler::{BundleSettings, Bundler, PackageSettings, SettingsBuilder};
     use std::path::PathBuf;
 
-    // Use brand name "Kodegen" as product name for user-facing installer
-    // (matches assets/img/kodegen.icns and creates Kodegen.app/Kodegen-{version}.dmg)
-    let product_name = "Kodegen".to_string();
+    // Use extracted metadata (not hardcoded!)
+    let product_name = metadata.name.clone();
+    let description = metadata.description.clone();
 
-    // Extract description from workspace config
-    let description = workspace
-        .workspace_config
-        .package
-        .as_ref()
-        .and_then(|p| p.other.get("description"))
-        .and_then(|d| d.as_str())
-        .unwrap_or("Rust application")
-        .to_string();
-
-    // Build package settings with workspace metadata
+    // Build package settings with extracted metadata
     let package_settings = PackageSettings {
         product_name,
         version: version.to_string(),
         description,
+        homepage: metadata.homepage.clone(),
+        authors: Some(metadata.authors.clone()),
         ..Default::default()
     };
 
     // Configure icon paths from assets directory (multi-resolution)
     let icon_paths = vec![
-        workspace.root.join("assets/img/icon_16x16.png"),
-        workspace.root.join("assets/img/icon_16x16@2x.png"),
-        workspace.root.join("assets/img/icon_32x32.png"),
-        workspace.root.join("assets/img/icon_32x32@2x.png"),
-        workspace.root.join("assets/img/icon_128x128.png"),
-        workspace.root.join("assets/img/icon_128x128@2x.png"),
-        workspace.root.join("assets/img/icon_256x256.png"),
-        workspace.root.join("assets/img/icon_256x256@2x.png"),
-        workspace.root.join("assets/img/icon_512x512.png"),
-        workspace.root.join("assets/img/icon_512x512@2x.png"),
+        repo_path.join("assets/img/icon_16x16.png"),
+        repo_path.join("assets/img/icon_16x16@2x.png"),
+        repo_path.join("assets/img/icon_32x32.png"),
+        repo_path.join("assets/img/icon_32x32@2x.png"),
+        repo_path.join("assets/img/icon_128x128.png"),
+        repo_path.join("assets/img/icon_128x128@2x.png"),
+        repo_path.join("assets/img/icon_256x256.png"),
+        repo_path.join("assets/img/icon_256x256@2x.png"),
+        repo_path.join("assets/img/icon_512x512.png"),
+        repo_path.join("assets/img/icon_512x512@2x.png"),
     ];
 
     // Configure bundle settings with icons and post-install scripts
@@ -156,38 +150,14 @@ pub(super) async fn create_bundles(
         ..Default::default()
     };
 
-    // Configure all required binaries for the bundle (18 total)
-    // kodegen_install runs first to setup system and register kodegend daemon
+    // Use discovered binary (not hardcoded list!)
     use crate::bundler::BundleBinary;
     let binaries = vec![
-        BundleBinary::new("kodegen_install".to_string(), true), // primary installer (runs first)
-        BundleBinary::new("kodegend".to_string(), false),       // service daemon
-        BundleBinary::new("kodegen".to_string(), false),        // main stdio MCP server
-        // HTTP category servers (15 binaries) - daemon launches these on ports 30438-30452
-        BundleBinary::new("kodegen-browser".to_string(), false),
-        BundleBinary::new("kodegen-citescrape".to_string(), false),
-        BundleBinary::new("kodegen-claude-agent".to_string(), false),
-        BundleBinary::new("kodegen-config".to_string(), false),
-        BundleBinary::new("kodegen-database".to_string(), false),
-        BundleBinary::new("kodegen-filesystem".to_string(), false),
-        BundleBinary::new("kodegen-git".to_string(), false),
-        BundleBinary::new("kodegen-github".to_string(), false),
-        BundleBinary::new("kodegen-introspection".to_string(), false),
-        BundleBinary::new("kodegen-process".to_string(), false),
-        BundleBinary::new("kodegen-prompt".to_string(), false),
-        BundleBinary::new("kodegen-reasoner".to_string(), false),
-        BundleBinary::new("kodegen-sequential-thinking".to_string(), false),
-        BundleBinary::new("kodegen-terminal".to_string(), false),
-        BundleBinary::new("kodegen-candle-agent".to_string(), false),
+        BundleBinary::new(binary_name.to_string(), true),
     ];
 
-    // Determine output directory - check for universal binaries first (macOS)
-    let universal_dir = workspace.root.join("target/universal/release");
-    let out_dir = if universal_dir.exists() {
-        universal_dir
-    } else {
-        workspace.root.join("target/release")
-    };
+    // Determine output directory
+    let out_dir = repo_path.join("target/release");
 
     // Use SettingsBuilder to create Settings
     let settings = SettingsBuilder::new()
@@ -248,11 +218,11 @@ pub(super) async fn create_bundles(
         crate::cli::docker::check_docker_available().await?;
 
         // Ensure builder image exists (never rebuild during release for consistency)
-        crate::cli::docker::ensure_image_built(&workspace.root, false, _config).await?;
+        crate::cli::docker::ensure_image_built(repo_path, false, _config).await?;
 
         // Create container bundler with default resource limits
         let container = crate::cli::docker::ContainerBundler::with_limits(
-            workspace.root.clone(),
+            repo_path.clone(),
             crate::cli::docker::ContainerLimits::default(),
         );
 
@@ -341,4 +311,47 @@ fn calculate_checksum(path: &std::path::Path) -> Result<String> {
     }
 
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Build single binary from repository
+pub(crate) fn build_binary(
+    repo_path: &std::path::Path,
+    binary_name: &str,
+    release: bool,
+    config: &crate::cli::RuntimeConfig,
+) -> Result<()> {
+    use std::process::Command;
+
+    config.verbose_println(&format!(
+        "Building binary '{}'{}",
+        binary_name,
+        if release { " (release mode)" } else { "" }
+    ));
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(repo_path);
+    cmd.arg("build");
+    cmd.arg("--bin");
+    cmd.arg(binary_name);
+
+    if release {
+        cmd.arg("--release");
+    }
+
+    let output = cmd.output().map_err(|e| {
+        ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo_build".to_string(),
+            reason: e.to_string(),
+        })
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo_build".to_string(),
+            reason: format!("Failed to build binary '{}':\n{}", binary_name, stderr),
+        }));
+    }
+
+    Ok(())
 }

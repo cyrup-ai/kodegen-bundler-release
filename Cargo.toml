@@ -129,6 +129,7 @@ cyrup_termcolor = "2"
 
 [target.'cfg(unix)'.dependencies]
 users = "0.11"              # Safe user/group ID retrieval for Docker security
+nix = { version = "0.30", features = ["fs"] }  # Advisory file locking (flock)
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ar = "0.9"                  # AR archive for .deb
@@ -142,6 +143,7 @@ tempfile = "3"           # Temporary directory for DMG staging
 
 [target.'cfg(windows)'.dependencies]
 ico = "0.4"                 # ICO icon creation
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
 tempfile = "3"

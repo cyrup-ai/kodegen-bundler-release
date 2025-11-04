@@ -264,49 +264,58 @@ impl Publisher {
         use std::sync::Arc;
         use tokio::sync::{Semaphore, mpsc};
 
-        // Unbounded channel for results (bounded would risk deadlock with semaphore)
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Bounded channel sized to max concurrent (not package count)
+        // This creates natural backpressure and minimizes memory usage
+        let (tx, mut rx) = mpsc::channel(self.config.max_concurrent_per_tier);
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_per_tier));
 
-        // Spawn all tasks (they'll complete at different times)
+        // Compute capacity before spawning (don't capture package_names reference)
+        let capacity = package_names.len();
+        
+        // Spawn consumer task to process results as they arrive
+        let consumer_handle = tokio::spawn(async move {
+            let mut results = Vec::with_capacity(capacity);
+            while let Some(result) = rx.recv().await {
+                results.push(result);
+            }
+            results
+        });
+
+        // Producer: spawn tasks lazily (only when semaphore permits available)
         for package_name in package_names {
+            // Acquire permit BEFORE spawning task
+            let permit = semaphore.clone().acquire_owned().await
+                .map_err(|_| PublishError::PublishFailed {
+                    package: package_name.clone(),
+                    reason: "Semaphore closed unexpectedly".to_string(),
+                })?;
+
+            // NOW clone data (only for active/pending tasks, not all 50)
             let package_info = self.workspace.get_package(package_name)?.clone();
             let publisher = self.cargo_publisher.clone();
             let config = publish_config.clone();
-            let semaphore = Arc::clone(&semaphore);
             let tx = tx.clone();
             let package_name = package_name.clone();
 
             tokio::spawn(async move {
-                // Acquire semaphore permit with proper error handling
-                let permit = match semaphore.acquire().await {
-                    Ok(permit) => permit,
-                    Err(e) => {
-                        // Semaphore closed - send error through channel
-                        let error = PublishError::PublishFailed {
-                            package: package_name.clone(),
-                            reason: format!("Semaphore acquire failed: {}", e),
-                        };
-                        let _ = tx.send((package_name, Err(error.into())));
-                        return;
-                    }
-                };
-
                 let result = publisher.publish_package(&package_info, &config).await;
-
-                // Send result through channel (non-blocking)
-                let _ = tx.send((package_name, result));
-
-                // Explicitly drop permit to release semaphore slot
-                drop(permit);
+                let _ = tx.send((package_name, result)).await;
+                drop(permit);  // Release semaphore
             });
         }
 
-        // Drop original sender so rx.recv() knows when all tasks are done
+        // Drop sender to signal no more results
         drop(tx);
 
-        // Process results as they complete (incremental progress!)
-        while let Some((package_name, result)) = rx.recv().await {
+        // Wait for all results
+        let results = consumer_handle.await
+            .map_err(|e| PublishError::PublishFailed {
+                package: "consumer".to_string(),
+                reason: format!("Consumer task panicked: {}", e),
+            })?;
+
+        // Process results (same logic as before)
+        for (package_name, result) in results {
             match result {
                 Ok(publish_result) => {
                     runtime_config.success(&publish_result.summary());

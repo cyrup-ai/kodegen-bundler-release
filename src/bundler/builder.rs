@@ -40,7 +40,7 @@
 //! ```
 
 use crate::bail;
-use crate::bundler::{BundledArtifact, PackageType, Result, Settings};
+use crate::bundler::{error::ErrorExt, BundledArtifact, PackageType, Result, Settings};
 use std::sync::LazyLock;
 
 /// Check if makensis is available for NSIS installer creation.
@@ -307,15 +307,18 @@ impl Bundler {
             // Calculate artifact metadata
             let mut size = 0u64;
             for p in &paths {
-                if let Ok(metadata) = tokio::fs::metadata(p).await {
-                    size += metadata.len();
-                }
+                let metadata = tokio::fs::metadata(p).await
+                    .fs_context("reading artifact metadata", p)?;
+                size += metadata.len();
             }
 
-            let checksum = if !paths.is_empty() {
-                calculate_sha256(&paths[0]).await?
+            let checksum = if let Some(first_path) = paths.first() {
+                calculate_sha256(first_path).await?
             } else {
-                String::new()
+                bail!(
+                    "Platform bundler for {:?} returned no paths - this indicates a bundler bug",
+                    package_type
+                );
             };
 
             artifacts.push(BundledArtifact {
@@ -462,14 +465,16 @@ async fn calculate_directory_sha256(dir_path: &std::path::Path) -> Result<String
         }
 
         // Hash file content
-        if let Ok(mut file) = tokio::fs::File::open(entry.path()).await {
-            loop {
-                match file.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(n) => hasher.update(&buffer[..n]),
-                    Err(_) => break, // Skip unreadable files
-                }
+        let mut file = tokio::fs::File::open(entry.path()).await
+            .fs_context("opening file for hashing", entry.path())?;
+
+        loop {
+            let n = file.read(&mut buffer).await
+                .fs_context("reading file for hash calculation", entry.path())?;
+            if n == 0 {
+                break;
             }
+            hasher.update(&buffer[..n]);
         }
     }
 

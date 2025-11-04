@@ -7,66 +7,83 @@ use kodegen_bundler_release::cli;
 use kodegen_bundler_release::cli::OutputManager;
 use std::process;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // CRITICAL: Parse and set environment variables FIRST (guaranteed single-threaded)
+    // This MUST be the very first operation in main() to avoid UB from set_var
+    parse_and_set_zshrc_env_vars();
+
+    // NOW safe to initialize logging (after env vars are set)
     env_logger::init();
 
+    // Create tokio runtime
+    let runtime = tokio::runtime::Runtime::new()
+        .expect("Failed to create Tokio runtime");
+
+    // Run the async main logic
+    let exit_code = runtime.block_on(async_main());
+    process::exit(exit_code);
+}
+
+/// Parse ~/.zshrc and set environment variables
+/// 
+/// SAFETY: This function uses `unsafe { std::env::set_var() }`, which is only safe
+/// when called from a single-threaded context. This function MUST be called before
+/// creating the Tokio runtime to avoid undefined behavior.
+fn parse_and_set_zshrc_env_vars() {
     // Source ~/.zshrc to load environment variables (APPLE_CERTIFICATE, etc.)
     // This is critical for code signing to work properly
-    if let Some(home) = dirs::home_dir() {
-        let zshrc = home.join(".zshrc");
-        if zshrc.exists() {
-            // Run shell to source .zshrc and export all environment variables
-            if let Ok(output) = std::process::Command::new("zsh")
-                .arg("-c")
-                .arg(format!("source {} && env", zshrc.display()))
-                .output()
-                && output.status.success()
-            {
-                let env_output = String::from_utf8_lossy(&output.stdout);
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
 
-                // Parse and set environment variables
-                // This needs to handle multi-line values (e.g., APPLE_API_KEY_CONTENT with embedded newlines)
-                let mut current_key: Option<String> = None;
-                let mut current_value = String::new();
+    let zshrc = home.join(".zshrc");
+    if !zshrc.exists() {
+        return;
+    }
 
-                for line in env_output.lines() {
-                    // Check if this line starts a new key=value pair
-                    if let Some((key, value)) = line.split_once('=') {
-                        // First, save the previous key-value pair if any
-                        if let Some(prev_key) = current_key.take() {
-                            unsafe {
-                                std::env::set_var(prev_key, current_value.trim_end());
-                            }
-                            current_value.clear();
-                        }
+    // Use null-byte separators for unambiguous parsing
+    // This handles all edge cases: newlines in values, '=' in values, empty values, etc.
+    let script = format!(
+        r#"source {} && env | while IFS='=' read -r key value; do printf '%s\0%s\0' "$key" "$value"; done"#,
+        zshrc.display()
+    );
 
-                        // Start accumulating the new key-value pair
-                        current_key = Some(key.to_string());
-                        current_value.push_str(value);
-                    } else {
-                        // This is a continuation line of a multi-line value
-                        if current_key.is_some() {
-                            current_value.push('\n');
-                            current_value.push_str(line);
-                        }
-                    }
-                }
+    let Ok(output) = std::process::Command::new("zsh")
+        .arg("-c")
+        .arg(script)
+        .output()
+    else {
+        return;
+    };
 
-                // Don't forget the last key-value pair
-                if let Some(key) = current_key {
-                    unsafe {
-                        std::env::set_var(key, current_value.trim_end());
-                    }
-                }
+    // Check stderr for warnings/errors from .zshrc sourcing
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        eprintln!("⚠️  Warning: errors while sourcing {}:", zshrc.display());
+        eprintln!("{}", stderr);
+        eprintln!("Continuing anyway, but some environment variables may not be set correctly.\n");
+    }
+
+    // Parse null-separated key-value pairs
+    // Format: KEY1\0VALUE1\0KEY2\0VALUE2\0...
+    let env_data = String::from_utf8_lossy(&output.stdout);
+    let mut parts = env_data.split('\0');
+
+    while let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+        if !key.is_empty() {
+            // SAFETY: This function is called as the FIRST operation in main(),
+            // guaranteeing single-threaded execution. No threads exist yet.
+            unsafe {
+                std::env::set_var(key, value);
             }
         }
     }
+}
 
+/// Async main logic - runs inside the Tokio runtime
+async fn async_main() -> i32 {
     match cli::run().await {
-        Ok(exit_code) => {
-            process::exit(exit_code);
-        }
+        Ok(exit_code) => exit_code,
         Err(e) => {
             // Create output manager for error display (never quiet for fatal errors)
             let output = OutputManager::new(false, false);
@@ -81,7 +98,7 @@ async fn main() {
                 }
             }
 
-            process::exit(1);
+            1
         }
     }
 }

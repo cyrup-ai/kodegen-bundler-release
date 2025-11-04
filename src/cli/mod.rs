@@ -8,7 +8,7 @@ pub mod commands;
 mod docker;
 mod output;
 
-pub use args::{Args, BumpType, Command, ResumePhase, RuntimeConfig, VerbosityLevel};
+pub use args::{Args, BumpType, RuntimeConfig, VerbosityLevel};
 pub use commands::execute_command;
 pub use output::OutputManager;
 

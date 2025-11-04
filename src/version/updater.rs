@@ -155,7 +155,32 @@ impl VersionUpdater {
         modified_files: &mut Vec<PathBuf>,
     ) -> Result<()> {
         let workspace_cargo_toml = self.workspace.root.join("Cargo.toml");
+        
+        // VALIDATE: Check for existing backup from previous failed release
+        let backup_path = workspace_cargo_toml.with_extension("toml.bak");
+        if backup_path.exists() {
+            return Err(VersionError::TomlUpdateFailed {
+                path: workspace_cargo_toml.clone(),
+                reason: format!(
+                    "Backup file already exists: {}. \
+                     This indicates a previous release failed. \
+                     Please clean up before retrying:\n  \
+                     To rollback: mv {} {}\n  \
+                     To proceed: rm {}",
+                    backup_path.display(),
+                    backup_path.display(),
+                    workspace_cargo_toml.display(),
+                    backup_path.display()
+                ),
+            }.into());
+        }
+        
+        // Open editor and create backup
         let mut editor = TomlEditor::open(&workspace_cargo_toml)?;
+        
+        // STORE backup for rollback tracking
+        let backup = editor.create_backup();
+        self.backups.push(backup);
 
         // Update workspace version
         editor.update_workspace_version(new_version)?;
@@ -174,7 +199,31 @@ impl VersionUpdater {
         config: &UpdateConfig,
         stats: &mut UpdateStats,
     ) -> Result<()> {
+        // VALIDATE: Check for existing backup
+        let backup_path = package_info.cargo_toml_path.with_extension("toml.bak");
+        if backup_path.exists() {
+            return Err(VersionError::TomlUpdateFailed {
+                path: package_info.cargo_toml_path.clone(),
+                reason: format!(
+                    "Backup file already exists: {}. \
+                     This indicates a previous release failed. \
+                     Please clean up before retrying:\n  \
+                     To rollback: mv {} {}\n  \
+                     To proceed: rm {}",
+                    backup_path.display(),
+                    backup_path.display(),
+                    package_info.cargo_toml_path.display(),
+                    backup_path.display()
+                ),
+            }.into());
+        }
+        
+        // Open editor and create backup
         let mut editor = TomlEditor::open(&package_info.cargo_toml_path)?;
+        
+        // STORE backup for rollback tracking
+        let backup = editor.create_backup();
+        self.backups.push(backup);
 
         let mut package_modified = false;
 
