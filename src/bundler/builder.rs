@@ -47,17 +47,50 @@ use std::sync::LazyLock;
 ///
 /// Cached result to avoid repeated subprocess calls during bundling.
 static HAS_MAKENSIS: LazyLock<bool> = LazyLock::new(|| {
-    which::which("makensis")
-        .ok()
-        .and_then(|path| {
-            // Verify makensis actually works by checking version
-            std::process::Command::new(path)
+    match which::which("makensis") {
+        Ok(path) => {
+            log::debug!("Found makensis at: {}", path.display());
+            
+            match std::process::Command::new(&path)
                 .arg("-VERSION")
                 .output()
-                .ok()
-                .map(|o| o.status.success())
-        })
-        .unwrap_or(false)
+            {
+                Ok(output) if output.status.success() => {
+                    let version = String::from_utf8_lossy(&output.stdout);
+                    log::info!("✓ makensis available: {}", version.trim());
+                    true
+                }
+                Ok(output) => {
+                    log::warn!(
+                        "makensis found at {} but -VERSION check failed (exit code: {:?}). \
+                         NSIS installers will be skipped. \
+                         Stderr: {}",
+                        path.display(),
+                        output.status.code(),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    false
+                }
+                Err(e) => {
+                    log::warn!(
+                        "makensis found at {} but failed to execute: {}. \
+                         NSIS installers will be skipped. \
+                         Check file permissions.",
+                        path.display(),
+                        e
+                    );
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            log::debug!(
+                "makensis not found in PATH: {}. NSIS installers will be skipped.",
+                e
+            );
+            false
+        }
+    }
 });
 
 /// Main bundler orchestrator.
