@@ -326,7 +326,7 @@ impl StateManager {
         Ok(state)
     }
 
-    /// Acquire file lock using advisory locking (flock)
+    /// Acquire file lock using platform-specific advisory locking
     async fn acquire_lock(&mut self) -> Result<()> {
         if self.lock_handle.is_some() {
             return Ok(()); // Already locked
@@ -344,11 +344,11 @@ impl StateManager {
                 .into());
             }
 
-            // ATOMIC STEP 1: Open or create lock file
+            // Step 1: Open or create lock file
             let mut file = match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(true)  // Changed from create_new(true) - eliminates TOCTOU race
+                .create(true)
                 .open(&self.lock_file_path)
             {
                 Ok(f) => f,
@@ -360,201 +360,162 @@ impl StateManager {
                 }
             };
 
-            // ATOMIC STEP 2: Try to acquire flock (this is the REAL lock)
-            #[cfg(unix)]
-            {
-                // Note: Using flock() free function instead of Flock RAII wrapper because
-                // we need a persistent lock that outlives this scope. The RAII wrapper is
-                // designed for scoped locking, but we need to store the file handle and
-                // keep the lock alive for the lifetime of the StateManager.
-                #[allow(deprecated)]
-                use nix::fcntl::{flock, FlockArg};
-                use std::os::unix::io::AsRawFd;
-
-                #[allow(deprecated)]
-                match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
-                    Ok(()) => {
-                        // SUCCESS: We hold the exclusive lock
-                        // Write our PID to the lock file
-                        let pid = std::process::id();
-                        let acquired_at = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map_err(|e| StateError::SaveFailed {
-                                reason: format!("System time error: {}", e),
-                            })?
-                            .as_secs();
-
-                        let lock_data = serde_json::json!({
-                            "pid": pid,
-                            "acquired_at": acquired_at,
-                        });
-
-                        let lock_data_str = serde_json::to_string(&lock_data)
-                            .map_err(|e| StateError::SaveFailed {
-                                reason: format!("Failed to serialize lock data: {}", e),
-                            })?;
-
-                        // Truncate and write (we hold the lock)
-                        file.set_len(0).ok();
-                        file.write_all(lock_data_str.as_bytes())
-                            .map_err(|e| StateError::SaveFailed {
-                                reason: format!("Failed to write lock file: {}", e),
-                            })?;
-                        file.sync_all().ok();
-
-                        // Store lock handle (keeps flock alive)
-                        self.lock_handle = Some(FileLock {
-                            _lock_file: self.lock_file_path.clone(),
-                            _pid: pid,
-                            _acquired_at: SystemTime::now(),
-                            _lock_handle: file,  // Must keep alive
-                        });
-
-                        return Ok(());
-                    }
-                    Err(e) if e == nix::errno::Errno::EWOULDBLOCK => {
-                        // Lock held by another process - wait and retry
-                        drop(file);
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(StateError::SaveFailed {
-                            reason: format!("flock error: {}", e),
-                        }
-                        .into());
-                    }
-                }
-            }
-
-            #[cfg(windows)]
-            {
-                use std::os::windows::io::AsRawHandle;
-                use windows::Win32::Foundation::HANDLE;
-                use windows::Win32::Storage::FileSystem::{
-                    LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-                };
-                use windows::Win32::System::IO::OVERLAPPED;
-
-                let raw_handle = file.as_raw_handle();
-                let handle = HANDLE(raw_handle as isize);
-                
-                // Zero-initialized OVERLAPPED is correct for synchronous file locking
-                let mut overlapped = OVERLAPPED::default();
-
-                // SAFETY:
-                // - handle is valid (file was successfully opened)
-                // - overlapped is zero-initialized
-                // - non-blocking attempt (LOCKFILE_FAIL_IMMEDIATELY)
-                unsafe {
-                    match LockFileEx(
-                        handle,
-                        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                        0,        // Reserved
-                        u32::MAX, // Lock entire file
-                        u32::MAX,
-                        &mut overlapped,
-                    ) {
-                        Ok(()) => {
-                            // SUCCESS: We hold the exclusive lock
-                            let pid = std::process::id();
-                            let acquired_at = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map_err(|e| StateError::SaveFailed {
-                                    reason: format!("System time error: {}", e),
-                                })?
-                                .as_secs();
-
-                            let lock_data = serde_json::json!({
-                                "pid": pid,
-                                "acquired_at": acquired_at,
-                            });
-
-                            let lock_data_str = serde_json::to_string(&lock_data)
-                                .map_err(|e| StateError::SaveFailed {
-                                    reason: format!("Failed to serialize lock data: {}", e),
-                                })?;
-
-                            file.set_len(0).ok();
-                            file.write_all(lock_data_str.as_bytes())
-                                .map_err(|e| StateError::SaveFailed {
-                                    reason: format!("Failed to write lock file: {}", e),
-                                })?;
-                            file.sync_all().ok();
-
-                            self.lock_handle = Some(FileLock {
-                                _lock_file: self.lock_file_path.clone(),
-                                _pid: pid,
-                                _acquired_at: SystemTime::now(),
-                                _lock_handle: file,
-                            });
-
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            // Lock is held by another process or other error
-                            let code = e.code().0 as u32;
-                            if code == 33 {  // ERROR_LOCK_VIOLATION
-                                log::debug!("Lock held by another process, waiting...");
-                            }
-                            drop(file);
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            continue;
-                        }
-                    }
-                }
-            }
-
+            // Step 2: Try to acquire platform-specific lock
             #[cfg(not(any(unix, windows)))]
-            {
-                // Fallback: best-effort with age-based detection
-                let is_stale = file.metadata().ok().and_then(|m| m.modified().ok())
-                    .and_then(|t| t.elapsed().ok())
-                    .map(|d| d.as_secs() > self.config.stale_lock_timeout_seconds)
-                    .unwrap_or(false);
-                
-                if is_stale {
-                    // Lock file is stale, overwrite it
-                    let pid = std::process::id();
-                    let acquired_at = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|e| StateError::SaveFailed {
-                            reason: format!("System time error: {}", e),
-                        })?
-                        .as_secs();
+            let lock_result = try_platform_lock_with_metadata(&file, self.config.stale_lock_timeout_seconds);
+            
+            #[cfg(any(unix, windows))]
+            let lock_result = try_platform_lock(&file);
 
-                    let lock_data = serde_json::json!({
-                        "pid": pid,
-                        "acquired_at": acquired_at,
-                    });
+            match lock_result {
+                LockResult::Acquired => {
+                    // Step 3: Write lock metadata
+                    write_lock_metadata(&mut file)?;
 
-                    let lock_data_str = serde_json::to_string(&lock_data)
-                        .map_err(|e| StateError::SaveFailed {
-                            reason: format!("Failed to serialize lock data: {}", e),
-                        })?;
-
-                    file.set_len(0).ok();
-                    file.write_all(lock_data_str.as_bytes())
-                        .map_err(|e| StateError::SaveFailed {
-                            reason: format!("Failed to write lock file: {}", e),
-                        })?;
-                    
+                    // Step 4: Store lock handle (keeps lock alive)
                     self.lock_handle = Some(FileLock {
                         _lock_file: self.lock_file_path.clone(),
-                        _pid: pid,
+                        _pid: std::process::id(),
                         _acquired_at: SystemTime::now(),
                         _lock_handle: file,
                     });
-                    
+
                     return Ok(());
-                } else {
+                }
+                LockResult::Busy => {
+                    // Lock held by another process - wait and retry
                     drop(file);
                     tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                LockResult::Error(msg) => {
+                    return Err(StateError::SaveFailed {
+                        reason: format!("Lock acquisition failed: {}", msg),
+                    }
+                    .into());
                 }
             }
         }
     }
+}
 
+/// Write lock metadata to file (called after successful lock acquisition)
+fn write_lock_metadata(file: &mut std::fs::File) -> Result<()> {
+    let pid = std::process::id();
+    let acquired_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| StateError::SaveFailed {
+            reason: format!("System time error: {}", e),
+        })?
+        .as_secs();
+
+    let lock_data = serde_json::json!({
+        "pid": pid,
+        "acquired_at": acquired_at,
+    });
+
+    let lock_data_str = serde_json::to_string(&lock_data)
+        .map_err(|e| StateError::SaveFailed {
+            reason: format!("Failed to serialize lock data: {}", e),
+        })?;
+
+    // Truncate and write atomically
+    file.set_len(0)
+        .map_err(|e| StateError::SaveFailed {
+            reason: format!("Failed to truncate lock file: {}", e),
+        })?;
+    
+    file.write_all(lock_data_str.as_bytes())
+        .map_err(|e| StateError::SaveFailed {
+            reason: format!("Failed to write lock file: {}", e),
+        })?;
+    
+    file.sync_all()
+        .map_err(|e| StateError::SaveFailed {
+            reason: format!("Failed to sync lock file: {}", e),
+        })?;
+
+    Ok(())
+}
+
+/// Try to acquire exclusive lock using flock (Unix)
+#[cfg(unix)]
+fn try_platform_lock(file: &std::fs::File) -> LockResult {
+    use nix::fcntl::{flock, FlockArg};
+    use std::os::unix::io::AsRawFd;
+
+    #[allow(deprecated)]  // TODO: Upgrade to nix::fcntl::Flock RAII wrapper
+    match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
+        Ok(()) => LockResult::Acquired,
+        Err(e) if e == nix::errno::Errno::EWOULDBLOCK => LockResult::Busy,
+        Err(e) => LockResult::Error(format!("flock error: {}", e)),
+    }
+}
+
+/// Try to acquire exclusive lock using LockFileEx (Windows)
+#[cfg(windows)]
+fn try_platform_lock(file: &std::fs::File) -> LockResult {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows::Win32::System::IO::OVERLAPPED;
+
+    let raw_handle = file.as_raw_handle();
+    let handle = HANDLE(raw_handle as isize);
+    
+    let mut overlapped = OVERLAPPED::default();
+
+    // SAFETY:
+    // - handle is valid (file was successfully opened)
+    // - overlapped is zero-initialized (correct for synchronous locking)
+    // - non-blocking attempt (LOCKFILE_FAIL_IMMEDIATELY)
+    unsafe {
+        match LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,        // Reserved
+            u32::MAX, // Lock entire file
+            u32::MAX,
+            &mut overlapped,
+        ) {
+            Ok(()) => LockResult::Acquired,
+            Err(e) => {
+                let code = e.code().0 as u32;
+                if code == 33 {  // ERROR_LOCK_VIOLATION
+                    LockResult::Busy
+                } else {
+                    LockResult::Error(format!("LockFileEx error {}: {:?}", code, e))
+                }
+            }
+        }
+    }
+}
+
+/// Try to acquire lock using age-based stale detection (fallback)
+#[cfg(not(any(unix, windows)))]
+fn try_platform_lock_with_metadata(
+    file: &std::fs::File,
+    stale_timeout_secs: u64,
+) -> LockResult {
+    // Check if existing lock file is stale based on modification time
+    let is_stale = file
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs() > stale_timeout_secs)
+        .unwrap_or(false);
+
+    if is_stale {
+        LockResult::Acquired
+    } else {
+        LockResult::Busy
+    }
+}
+
+impl StateManager {
     /// Update configuration
     pub fn set_config(&mut self, config: StateConfig) {
         self.config = config;
