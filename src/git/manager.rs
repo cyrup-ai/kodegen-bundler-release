@@ -507,33 +507,29 @@ impl GitManager {
         })
     }
 
-    /// Safely attempt to return to main branch, tracking recovery status
+    /// Report current repository state without attempting recovery
     /// 
-    /// This method attempts to checkout main and reports the outcome.
-    /// If checkout fails, it tries to determine the current branch state
-    /// to provide actionable error information.
+    /// This method ONLY reports the current branch state and does NOT attempt
+    /// to checkout main. This prevents retrying a checkout operation that may
+    /// have already failed earlier in the release process.
+    /// 
+    /// Used by error handlers to provide context about where the repository
+    /// was left after a failed operation.
     async fn safe_return_to_main(&self) -> String {
-        match self.repository.checkout_branch("main").await {
-            Ok(()) => {
-                "successfully returned to main branch".to_string()
+        // Don't attempt checkout - just report current state
+        match self.repository.get_current_branch().await {
+            Ok(branch_info) => {
+                format!(
+                    "Release operation failed. Repository is currently on branch '{}'. \
+                     Manual intervention may be required to return to main. \
+                     Run 'git checkout main' to return to main branch.",
+                    branch_info.name
+                )
             }
-            Err(checkout_err) => {
-                // Recovery failed - try to determine current state for error reporting
-                match self.repository.get_current_branch().await {
-                    Ok(branch_info) => {
-                        format!(
-                            "FAILED to return to main branch: {}. Repository is currently on branch '{}'. Manual intervention required: run 'git checkout main' or resolve the underlying issue",
-                            checkout_err,
-                            branch_info.name
-                        )
-                    }
-                    Err(_) => {
-                        format!(
-                            "FAILED to return to main branch: {}. Could not determine current branch. Manual intervention required: run 'git status' to check repository state",
-                            checkout_err
-                        )
-                    }
-                }
+            Err(_) => {
+                "Release operation failed. Cannot determine current branch. \
+                 Manual intervention required. Run 'git status' to check repository state."
+                    .to_string()
             }
         }
     }

@@ -67,6 +67,17 @@ struct FileLock {
     _lock_handle: std::fs::File,
 }
 
+/// Result of attempting to acquire platform lock
+#[derive(Debug)]
+enum LockResult {
+    /// Lock successfully acquired
+    Acquired,
+    /// Lock held by another process (retry possible)
+    Busy,
+    /// Unrecoverable error
+    Error(String),
+}
+
 /// Result of state loading operation
 #[derive(Debug)]
 pub struct LoadStateResult {
@@ -281,77 +292,6 @@ impl StateManager {
             }
             Err(_) => false,
         }
-    }
-
-    /// Check if the lock file is stale and can be removed
-    ///
-    /// A lock is considered stale if:
-    /// 1. It's older than stale_lock_timeout_seconds, OR
-    /// 2. The process that created it no longer exists (Unix only)
-    #[deprecated(note = "Stale detection now handled by flock in acquire_lock()")]
-    fn is_lock_stale(&self) -> Result<bool> {
-        if !self.lock_file_path.exists() {
-            return Ok(false);
-        }
-
-        // Read and parse lock file
-        let lock_data =
-            fs::read_to_string(&self.lock_file_path).map_err(|e| StateError::LoadFailed {
-                reason: format!("Failed to read lock file: {}", e),
-            })?;
-
-        let lock_info: serde_json::Value =
-            serde_json::from_str(&lock_data).map_err(|e| StateError::Corrupted {
-                reason: format!("Invalid lock file format: {}", e),
-            })?;
-
-        // Check 1: Age-based expiration
-        if let Some(acquired_at) = lock_info["acquired_at"].as_u64() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| StateError::LoadFailed {
-                    reason: format!("System time error: {}", e),
-                })?
-                .as_secs();
-            let age = now - acquired_at;
-
-            if age > self.config.stale_lock_timeout_seconds {
-                log::warn!(
-                    "Lock file is stale (age: {}s > {}s)",
-                    age,
-                    self.config.stale_lock_timeout_seconds
-                );
-                return Ok(true);
-            }
-        }
-
-        // Check 2: Process liveness (Unix only)
-        #[cfg(unix)]
-        if let Some(pid) = lock_info["pid"].as_u64() {
-            use std::process::Command;
-
-            // Use `kill -0 <pid>` to check if process exists
-            // Exit code 0 = process exists, non-zero = process doesn't exist
-            let process_exists = Command::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-            if !process_exists {
-                log::warn!("Lock file references dead process (PID: {})", pid);
-                return Ok(true);
-            }
-        }
-
-        // On Windows, only age-based detection is used
-        #[cfg(not(unix))]
-        {
-            let _ = lock_info["pid"].as_u64(); // Suppress unused warning
-        }
-
-        Ok(false)
     }
 
     /// Force remove lock (use with caution)

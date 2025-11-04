@@ -51,6 +51,84 @@ struct UpdateStats {
     dependencies_updated: usize,
 }
 
+/// Handle existing backup files intelligently
+///
+/// Auto-deletes if backup is stale (identical to current).
+/// Provides detailed guidance if files differ (ambiguous state).
+fn handle_existing_backup(
+    current_path: &Path,
+    backup_path: &Path,
+) -> Result<()> {
+    if !backup_path.exists() {
+        return Ok(());
+    }
+    
+    // Read both files
+    let current_content = std::fs::read_to_string(current_path)
+        .map_err(|e| VersionError::TomlUpdateFailed {
+            path: current_path.to_path_buf(),
+            reason: format!("Cannot read current file: {}", e),
+        })?;
+    
+    let backup_content = std::fs::read_to_string(backup_path)
+        .map_err(|e| VersionError::TomlUpdateFailed {
+            path: backup_path.to_path_buf(),
+            reason: format!("Cannot read backup file: {}", e),
+        })?;
+    
+    // Compare content (trim to ignore whitespace differences)
+    if current_content.trim() == backup_content.trim() {
+        // STALE BACKUP: Files identical, safe to auto-delete
+        log::info!(
+            "Auto-removing stale backup file (identical to current): {}",
+            backup_path.display()
+        );
+        
+        if let Err(e) = std::fs::remove_file(backup_path) {
+            log::warn!(
+                "Could not remove stale backup {}: {}. Continuing anyway.",
+                backup_path.display(),
+                e
+            );
+        }
+        
+        return Ok(());
+    }
+    
+    // FILES DIFFER: Unclear state, require manual intervention
+    Err(VersionError::TomlUpdateFailed {
+        path: current_path.to_path_buf(),
+        reason: format!(
+            "Backup file exists and DIFFERS from current file:\n\
+             \n\
+             Current: {}\n\
+             Backup:  {}\n\
+             \n\
+             This indicates a previous release may have partially completed.\n\
+             Manual intervention required:\n\
+             \n\
+             1. Inspect differences:\n   \
+                diff {} {}\n\
+             \n\
+             2. Check git status to understand current state:\n   \
+                git status\n   \
+                git diff\n\
+             \n\
+             3. Choose action based on your intent:\n   \
+                - To REVERT to backup (undo changes):  mv {} {}\n   \
+                - To KEEP current (discard backup):     rm {}\n\
+             ",
+            current_path.display(),
+            backup_path.display(),
+            backup_path.display(),
+            current_path.display(),
+            backup_path.display(),
+            current_path.display(),
+            backup_path.display(),
+        ),
+    }.into())
+}
+
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
@@ -158,22 +236,7 @@ impl VersionUpdater {
         
         // VALIDATE: Check for existing backup from previous failed release
         let backup_path = workspace_cargo_toml.with_extension("toml.bak");
-        if backup_path.exists() {
-            return Err(VersionError::TomlUpdateFailed {
-                path: workspace_cargo_toml.clone(),
-                reason: format!(
-                    "Backup file already exists: {}. \
-                     This indicates a previous release failed. \
-                     Please clean up before retrying:\n  \
-                     To rollback: mv {} {}\n  \
-                     To proceed: rm {}",
-                    backup_path.display(),
-                    backup_path.display(),
-                    workspace_cargo_toml.display(),
-                    backup_path.display()
-                ),
-            }.into());
-        }
+        handle_existing_backup(&workspace_cargo_toml, &backup_path)?;
         
         // Open editor and create backup
         let mut editor = TomlEditor::open(&workspace_cargo_toml)?;
@@ -201,22 +264,7 @@ impl VersionUpdater {
     ) -> Result<()> {
         // VALIDATE: Check for existing backup
         let backup_path = package_info.cargo_toml_path.with_extension("toml.bak");
-        if backup_path.exists() {
-            return Err(VersionError::TomlUpdateFailed {
-                path: package_info.cargo_toml_path.clone(),
-                reason: format!(
-                    "Backup file already exists: {}. \
-                     This indicates a previous release failed. \
-                     Please clean up before retrying:\n  \
-                     To rollback: mv {} {}\n  \
-                     To proceed: rm {}",
-                    backup_path.display(),
-                    backup_path.display(),
-                    package_info.cargo_toml_path.display(),
-                    backup_path.display()
-                ),
-            }.into());
-        }
+        handle_existing_backup(&package_info.cargo_toml_path, &backup_path)?;
         
         // Open editor and create backup
         let mut editor = TomlEditor::open(&package_info.cargo_toml_path)?;
