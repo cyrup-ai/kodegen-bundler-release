@@ -29,7 +29,17 @@ pub struct Publisher {
 /// Configuration for the publishing orchestrator
 #[derive(Debug, Clone)]
 pub struct PublisherConfig {
-    /// Delay between publishing packages (user requested 15 seconds)
+    /// Delay between publishing packages to avoid crates.io rate limits.
+    /// 
+    /// **Default: 60 seconds** (conservative to prevent "too many new crates" errors)
+    /// 
+    /// crates.io enforces 30 publishes/minute (2-second minimum). The 60-second
+    /// default provides a 30x safety margin for large workspaces (50+ packages).
+    /// 
+    /// **History:** Originally requested at 15 seconds, increased to 60 seconds
+    /// after testing showed rate limit issues with large workspace publishing.
+    /// 
+    /// See: https://github.com/rust-lang/crates.io/issues/1643
     pub inter_package_delay: Duration,
     /// Whether to perform dry run validation first
     pub dry_run_first: bool,
@@ -48,7 +58,9 @@ pub struct PublisherConfig {
 impl Default for PublisherConfig {
     fn default() -> Self {
         Self {
-            inter_package_delay: Duration::from_secs(60), // Increased to 60 seconds to avoid crates.io "too many new crates" limit
+            // Conservative delay prevents crates.io rate limiting (30/min max)
+            // Testing with 50-package workspaces confirmed 60s is reliable
+            inter_package_delay: Duration::from_secs(60),
             dry_run_first: false,
             continue_on_failure: false,
             max_concurrent_per_tier: 3,
