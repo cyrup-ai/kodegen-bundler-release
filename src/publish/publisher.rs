@@ -276,13 +276,20 @@ impl Publisher {
         use std::sync::Arc;
         use tokio::sync::{Semaphore, mpsc};
 
+        // PRE-VALIDATE: Clone all package info upfront (fail fast before spawning)
+        let mut package_infos = Vec::with_capacity(package_names.len());
+        for package_name in package_names {
+            let package_info = self.workspace.get_package(package_name)?.clone();
+            package_infos.push((package_name.clone(), package_info));
+        }
+
         // Bounded channel sized to max concurrent (not package count)
         // This creates natural backpressure and minimizes memory usage
         let (tx, mut rx) = mpsc::channel(self.config.max_concurrent_per_tier);
         let semaphore = Arc::new(Semaphore::new(self.config.max_concurrent_per_tier));
 
         // Compute capacity before spawning (don't capture package_names reference)
-        let capacity = package_names.len();
+        let capacity = package_infos.len();
         
         // Spawn consumer task to process results as they arrive
         let consumer_handle = tokio::spawn(async move {
@@ -293,8 +300,8 @@ impl Publisher {
             results
         });
 
-        // Producer: spawn tasks lazily (only when semaphore permits available)
-        for package_name in package_names {
+        // Producer: spawn tasks using pre-validated data
+        for (package_name, package_info) in package_infos {
             // Acquire permit BEFORE spawning task
             let permit = semaphore.clone().acquire_owned().await
                 .map_err(|_| PublishError::PublishFailed {
@@ -302,16 +309,14 @@ impl Publisher {
                     reason: "Semaphore closed unexpectedly".to_string(),
                 })?;
 
-            // NOW clone data (only for active/pending tasks, not all 50)
-            let package_info = self.workspace.get_package(package_name)?.clone();
             let publisher = self.cargo_publisher.clone();
             let config = publish_config.clone();
             let tx = tx.clone();
-            let package_name = package_name.clone();
+            let package_name_clone = package_name.clone();
 
             tokio::spawn(async move {
                 let result = publisher.publish_package(&package_info, &config).await;
-                let _ = tx.send((package_name, result)).await;
+                let _ = tx.send((package_name_clone, result)).await;
                 drop(permit);  // Release semaphore
             });
         }
@@ -326,7 +331,9 @@ impl Publisher {
                 reason: format!("Consumer task panicked: {}", e),
             })?;
 
-        // Process results (same logic as before)
+        // Process ALL results FIRST (don't return early)
+        let mut first_error = None;
+
         for (package_name, result) in results {
             match result {
                 Ok(publish_result) => {
@@ -337,19 +344,28 @@ impl Publisher {
                 }
                 Err(e) => {
                     let error_msg = format!("Failed to publish {}: {}", package_name, e);
+                    runtime_config.error(&error_msg);
                     self.publish_state
                         .failed_packages
                         .insert(package_name.clone(), error_msg.clone());
 
-                    if !self.config.continue_on_failure {
-                        return Err(PublishError::PublishFailed {
-                            package: package_name,
-                            reason: error_msg,
-                        }
-                        .into());
+                    // Capture first error but keep processing
+                    if first_error.is_none() {
+                        first_error = Some((package_name, error_msg));
                     }
                 }
             }
+        }
+
+        // NOW return error after ALL results are recorded
+        if let Some((package_name, error_msg)) = first_error
+            && !self.config.continue_on_failure
+        {
+            return Err(PublishError::PublishFailed {
+                package: package_name,
+                reason: error_msg,
+            }
+            .into());
         }
 
         Ok(())
