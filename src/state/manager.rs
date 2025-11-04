@@ -63,7 +63,7 @@ struct FileLock {
     /// File handle that holds the flock
     /// CRITICAL: Must be kept alive for lock to remain held.
     /// The flock is automatically released when this file handle is dropped.
-    /// See Drop implementation at line 580.
+    /// See Drop implementation at line 625.
     _lock_handle: std::fs::File,
 }
 
@@ -423,9 +423,15 @@ impl StateManager {
             // ATOMIC STEP 2: Try to acquire flock (this is the REAL lock)
             #[cfg(unix)]
             {
+                // Note: Using flock() free function instead of Flock RAII wrapper because
+                // we need a persistent lock that outlives this scope. The RAII wrapper is
+                // designed for scoped locking, but we need to store the file handle and
+                // keep the lock alive for the lifetime of the StateManager.
+                #[allow(deprecated)]
                 use nix::fcntl::{flock, FlockArg};
                 use std::os::unix::io::AsRawFd;
 
+                #[allow(deprecated)]
                 match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
                     Ok(()) => {
                         // SUCCESS: We hold the exclusive lock
@@ -510,8 +516,7 @@ impl StateManager {
                         &mut overlapped,
                     ) {
                         Ok(()) => {
-                            // SUCCESS: Lock file exists but NOT locked = STALE
-                            // We now hold the lock, safe to remove and recreate
+                            // SUCCESS: We hold the exclusive lock
                             let pid = std::process::id();
                             let acquired_at = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
@@ -563,7 +568,6 @@ impl StateManager {
             #[cfg(not(any(unix, windows)))]
             {
                 // Fallback: best-effort with age-based detection
-                #[allow(deprecated)]
                 let is_stale = file.metadata().ok().and_then(|m| m.modified().ok())
                     .and_then(|t| t.elapsed().ok())
                     .map(|d| d.as_secs() > self.config.stale_lock_timeout_seconds)

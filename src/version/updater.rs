@@ -9,7 +9,7 @@ use crate::workspace::{SharedWorkspaceInfo, WorkspaceInfo};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Coordinates version updates across the entire workspace
 #[derive(Debug)]
