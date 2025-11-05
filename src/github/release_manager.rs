@@ -321,6 +321,46 @@ impl GitHubReleaseManager {
         }
     }
 
+    /// Get list of assets already uploaded to a release
+    ///
+    /// Returns a HashSet of asset filenames for fast lookup.
+    ///
+    /// Uses octocrab::models::repos::Release which includes:
+    /// - `assets: Vec<octocrab::models::repos::Asset>` - List of uploaded assets
+    /// - Each Asset has `name: String` field for filename comparison
+    pub async fn get_release_asset_names(
+        &self,
+        version: &semver::Version,
+    ) -> Result<std::collections::HashSet<String>> {
+        use kodegen_tools_github::get_release_by_tag;
+
+        let tag_name = format!("v{}", version);
+
+        let release = get_release_by_tag(
+            self.client.inner().clone(),
+            &self.config.owner,
+            &self.config.repo,
+            &tag_name,
+        )
+        .await
+        .map_err(|e| ReleaseError::GitHub(e.to_string()))?;
+
+        // If release doesn't exist, return empty set
+        let release = match release {
+            Some(r) => r,
+            None => return Ok(std::collections::HashSet::new()),
+        };
+
+        // Extract asset names from octocrab Release.assets Vec
+        let asset_names: std::collections::HashSet<String> = release
+            .assets
+            .iter()
+            .map(|asset| asset.name.clone())
+            .collect();
+
+        Ok(asset_names)
+    }
+
     /// Upload signed artifacts to release
     ///
     /// Reads artifact files and uploads them as release assets.
@@ -329,9 +369,21 @@ impl GitHubReleaseManager {
         &self,
         release_id: u64,
         artifact_paths: &[PathBuf],
+        version: &semver::Version,
         runtime_config: &crate::cli::RuntimeConfig,
     ) -> Result<Vec<String>> {
         let mut uploaded_urls = Vec::new();
+
+        // Query existing assets ONCE before upload loop
+        runtime_config.verbose_println("   Checking for existing assets...");
+        let existing_assets = self.get_release_asset_names(version).await?;
+
+        if !existing_assets.is_empty() {
+            runtime_config.verbose_println(&format!(
+                "   Found {} existing asset(s)",
+                existing_assets.len()
+            ));
+        }
 
         for artifact_path in artifact_paths {
             // Safety check: should be filtered at call site, but double-check
@@ -352,6 +404,12 @@ impl GitHubReleaseManager {
                         reason: format!("Invalid artifact filename: {:?}", artifact_path),
                     })
                 })?;
+
+            // IDEMPOTENCY: Skip if already uploaded
+            if existing_assets.contains(filename) {
+                runtime_config.indent(&format!("✓ Skipping {} (already uploaded)", filename));
+                continue;
+            }
 
             // Read file content
             let content = std::fs::read(artifact_path).map_err(|e| {

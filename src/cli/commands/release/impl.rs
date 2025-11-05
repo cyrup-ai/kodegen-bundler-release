@@ -126,7 +126,7 @@ async fn execute_phases_with_retry(
     
     // Manual retry loop for git operations (can't use retry_with_backoff due to &mut borrow)
     let git_result = {
-        let max_retries = 3u32;
+        let max_retries = config.retry_config.git_operations;
         let mut attempts = 0;
         
         loop {
@@ -202,7 +202,7 @@ async fn execute_phases_with_retry(
             &git_result.commit.hash,
             None,
         ),
-        3,  // Max 3 retries for GitHub API calls
+        config.retry_config.github_api,
         "GitHub release creation",
         config,
     ).await?;
@@ -337,7 +337,7 @@ async fn execute_phases_with_retry(
                     std::slice::from_ref(artifact_path),
                     config,
                 ),
-                3,  // Max 3 retries per file upload
+                config.retry_config.file_uploads,
                 &format!("Upload {}", filename),
                 config,
             ).await?;
@@ -376,7 +376,7 @@ async fn execute_phases_with_retry(
     
     retry_with_backoff(
         || github_manager.publish_draft_release(release_id),
-        3,  // Max 3 retries for publish
+        config.retry_config.release_publishing,
         "Publish GitHub release",
         config,
     ).await?;
@@ -410,7 +410,7 @@ async fn execute_phases_with_retry(
                     }))
                 }
             },
-            2,  // Max 2 retries for crates.io (rate limits usually need only one wait)
+            config.retry_config.release_publishing,
             &format!("Publish to {}", registry),
             config,
         ).await;
@@ -448,7 +448,7 @@ async fn execute_phases_with_retry(
                     }))
                 }
             },
-            2,  // Max 2 retries for crates.io
+            config.retry_config.release_publishing,
             "Publish to crates.io",
             config,
         ).await;
@@ -479,21 +479,99 @@ pub(super) async fn perform_release_single_repo(
 ) -> Result<i32> {
     config.println("🚀 Starting release in isolated environment");
     
-    // ===== CREATE RELEASE STATE FOR TRACKING =====
-    let current_version = semver::Version::parse(&metadata.version)
-        .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
-            version: metadata.version.clone(),
-            reason: e.to_string(),
-        }))?;
-    
-    let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
-        .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
-    
-    let mut release_state = ReleaseState::new(
-        current_version.clone(),
-        version_bump.clone(),
-        crate::state::ReleaseConfig::default(),
-    );
+    // ===== LOAD OR CREATE RELEASE STATE =====
+    use crate::state::{has_active_release, load_release_state, LoadStateResult};
+
+    let mut release_state = if has_active_release() {
+        config.println("📂 Found existing release state - resuming...");
+        
+        match load_release_state().await {
+            Ok(LoadStateResult { state, recovered_from_backup, warnings }) => {
+                if recovered_from_backup {
+                    config.warning_println("⚠️  State recovered from backup");
+                }
+                for warning in &warnings {
+                    config.warning_println(&format!("⚠️  {}", warning));
+                }
+                
+                // Validate state version matches what we're trying to release
+                let current_version = semver::Version::parse(&metadata.version)
+                    .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+                        version: metadata.version.clone(),
+                        reason: e.to_string(),
+                    }))?;
+                
+                let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
+                    .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
+                
+                let bumper = crate::version::VersionBumper::from_version(current_version.clone());
+                let expected_version = bumper.bump(version_bump)?;
+                
+                if state.target_version != expected_version {
+                    config.warning_println(&format!(
+                        "⚠️  State version mismatch: expected v{}, found v{}",
+                        expected_version,
+                        state.target_version
+                    ));
+                    config.warning_println("   Starting fresh release...");
+                    
+                    // Create new state
+                    ReleaseState::new(
+                        expected_version,
+                        version_bump,
+                        crate::state::ReleaseConfig::default(),
+                    )
+                } else {
+                    config.success_println(&format!("✓ Resuming release v{}", state.target_version));
+                    config.indent(&format!("   Current phase: {:?}", state.current_phase));
+                    config.indent(&format!("   Checkpoints: {}", state.checkpoints.len()));
+                    state
+                }
+            }
+            Err(e) => {
+                config.warning_println(&format!("⚠️  Failed to load state: {}", e));
+                config.warning_println("   Starting fresh release...");
+                
+                // Create new state
+                let current_version = semver::Version::parse(&metadata.version)
+                    .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+                        version: metadata.version.clone(),
+                        reason: e.to_string(),
+                    }))?;
+                
+                let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
+                    .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
+                
+                let bumper = crate::version::VersionBumper::from_version(current_version.clone());
+                let new_version = bumper.bump(version_bump.clone())?;
+                
+                ReleaseState::new(
+                    new_version,
+                    version_bump,
+                    crate::state::ReleaseConfig::default(),
+                )
+            }
+        }
+    } else {
+        // No existing state - start fresh
+        let current_version = semver::Version::parse(&metadata.version)
+            .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+                version: metadata.version.clone(),
+                reason: e.to_string(),
+            }))?;
+        
+        let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
+            .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
+        
+        let bumper = crate::version::VersionBumper::from_version(current_version.clone());
+        let new_version = bumper.bump(version_bump.clone())?;
+        
+        ReleaseState::new(
+            new_version,
+            version_bump,
+            crate::state::ReleaseConfig::default(),
+        )
+    };
     
     // ===== PHASE 1: VERSION BUMP =====
     config.println("🔢 Bumping version...");
@@ -601,29 +679,29 @@ pub(super) async fn perform_release_single_repo(
             let mut cleanup_warnings = Vec::new();
             
             // 1. Delete GitHub release if created (Phase 3+)
-            if let Some(github_state) = &release_state.github_state {
-                if let Some(release_id) = github_state.release_id {
-                    config.indent("🗑️  Deleting GitHub draft release...");
-                    
-                    // Retry GitHub release deletion with exponential backoff
-                    let delete_result = retry_with_backoff(
-                        || github_manager.delete_release(release_id),
-                        3,  // Max 3 retries for cleanup operations
-                        "GitHub release deletion",
-                        config,
-                    ).await;
-                    
-                    match delete_result {
-                        Ok(()) => {
-                            config.indent("   ✓ Deleted GitHub release");
-                        }
-                        Err(delete_err) => {
-                            // After 3 retries, log warning but continue cleanup
-                            let warning = format!("Failed to delete GitHub release after retries: {}", delete_err);
-                            cleanup_warnings.push(warning.clone());
-                            config.indent(&format!("   ⚠️  {}", warning));
-                            config.indent(&format!("   ℹ️  If needed, manually delete: https://github.com/{}/{}/releases", owner, repo));
-                        }
+            if let Some(github_state) = &release_state.github_state
+                && let Some(release_id) = github_state.release_id
+            {
+                config.indent("🗑️  Deleting GitHub draft release...");
+                
+                // Retry GitHub release deletion with exponential backoff
+                let delete_result = retry_with_backoff(
+                    || github_manager.delete_release(release_id),
+                    config.retry_config.cleanup_operations,
+                    "GitHub release deletion",
+                    config,
+                ).await;
+                
+                match delete_result {
+                    Ok(()) => {
+                        config.indent("   ✓ Deleted GitHub release");
+                    }
+                    Err(delete_err) => {
+                        // After 3 retries, log warning but continue cleanup
+                        let warning = format!("Failed to delete GitHub release after retries: {}", delete_err);
+                        cleanup_warnings.push(warning.clone());
+                        config.indent(&format!("   ⚠️  {}", warning));
+                        config.indent(&format!("   ℹ️  If needed, manually delete: https://github.com/{}/{}/releases", owner, repo));
                     }
                 }
             }
@@ -634,7 +712,7 @@ pub(super) async fn perform_release_single_repo(
             // Retry git rollback with exponential backoff
             // NOTE: Cannot use retry_with_backoff() because rollback_release() needs &mut self
             let rollback_result = {
-                let max_retries = 3u32;
+                let max_retries = config.retry_config.cleanup_operations;
                 let mut attempts = 0u32;
                 
                 loop {

@@ -315,6 +315,11 @@ impl ReleaseState {
         self.updated_at = chrono::Utc::now();
     }
 
+    /// Check if a specific phase has been completed (checkpoint exists)
+    pub fn has_completed(&self, phase: ReleasePhase) -> bool {
+        self.checkpoints.iter().any(|cp| cp.phase == phase)
+    }
+
     /// Set current phase
     pub fn set_phase(&mut self, phase: ReleasePhase) {
         self.current_phase = phase;

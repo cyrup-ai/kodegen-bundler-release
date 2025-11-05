@@ -3,6 +3,7 @@
 //! This module provides comprehensive CLI argument parsing using clap,
 //! with proper validation and error handling.
 
+use super::retry_config::RetryConfig;
 use crate::version::VersionBump;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -237,6 +238,8 @@ pub struct RuntimeConfig {
     pub docker_cpus: Option<String>,
     /// Docker container process limit
     pub docker_pids_limit: Option<u32>,
+    /// Retry configuration for various operations
+    pub retry_config: RetryConfig,
 }
 
 /// Verbosity level for output
@@ -276,6 +279,7 @@ impl From<&Args> for RuntimeConfig {
             docker_memory_swap: args.docker_memory_swap.clone(),
             docker_cpus: args.docker_cpus.clone(),
             docker_pids_limit: args.docker_pids_limit,
+            retry_config: RetryConfig::from_env(),
         }
     }
 }

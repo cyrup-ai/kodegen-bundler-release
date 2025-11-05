@@ -1,0 +1,98 @@
+//! Retry configuration for network operations.
+//!
+//! Provides configurable retry limits for different operation types,
+//! allowing users to tune retry behavior based on network conditions.
+
+/// Configuration for retry behavior across different operation types
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Max retries for git operations (commit, tag, push)
+    pub git_operations: u32,
+    
+    /// Max retries for GitHub API calls (create release, etc.)
+    pub github_api: u32,
+    
+    /// Max retries for file upload operations
+    pub file_uploads: u32,
+    
+    /// Max retries for release publishing (both GitHub and crates.io)
+    pub release_publishing: u32,
+    
+    /// Max retries for cleanup operations (deletion, rollback)
+    pub cleanup_operations: u32,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            git_operations: 3,        // Conservative - git is deterministic
+            github_api: 5,            // Higher - network + rate limits
+            file_uploads: 5,          // Higher - most network-dependent
+            release_publishing: 3,    // Conservative - idempotent operation
+            cleanup_operations: 3,    // Conservative - best-effort cleanup
+        }
+    }
+}
+
+impl RetryConfig {
+    /// Create config from environment variables with fallback to defaults
+    pub fn from_env() -> Self {
+        Self {
+            git_operations: std::env::var("KODEGEN_RETRY_GIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3),
+            github_api: std::env::var("KODEGEN_RETRY_GITHUB")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5),
+            file_uploads: std::env::var("KODEGEN_RETRY_UPLOADS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5),
+            release_publishing: std::env::var("KODEGEN_RETRY_PUBLISH")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3),
+            cleanup_operations: std::env::var("KODEGEN_RETRY_CLEANUP")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3),
+        }
+    }
+    
+    /// Validate retry counts are reasonable
+    pub fn validate(&self) -> Result<(), String> {
+        if self.git_operations > 10 {
+            return Err(format!(
+                "git_operations retry count too high: {} (max: 10)",
+                self.git_operations
+            ));
+        }
+        if self.github_api > 20 {
+            return Err(format!(
+                "github_api retry count too high: {} (max: 20)",
+                self.github_api
+            ));
+        }
+        if self.file_uploads > 20 {
+            return Err(format!(
+                "file_uploads retry count too high: {} (max: 20)",
+                self.file_uploads
+            ));
+        }
+        if self.release_publishing > 10 {
+            return Err(format!(
+                "release_publishing retry count too high: {} (max: 10)",
+                self.release_publishing
+            ));
+        }
+        if self.cleanup_operations > 10 {
+            return Err(format!(
+                "cleanup_operations retry count too high: {} (max: 10)",
+                self.cleanup_operations
+            ));
+        }
+        Ok(())
+    }
+}

@@ -7,10 +7,12 @@ mod args;
 pub mod commands;
 mod docker;
 mod output;
+mod retry_config;
 
 pub use args::{Args, BumpType, RuntimeConfig, VerbosityLevel};
 pub use commands::execute_command;
 pub use output::OutputManager;
+pub use retry_config::RetryConfig;
 
 use crate::error::Result;
 
