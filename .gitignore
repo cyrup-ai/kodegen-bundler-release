@@ -291,3 +291,4 @@ chrome_data*/
 **/target/
 
 # ============== </kodegen> ==============
+.cyrup_release_state.json
