@@ -7,8 +7,34 @@ use std::sync::LazyLock;
 
 /// Repository source: local path or GitHub
 pub enum RepositorySource {
+    /// Local repository on disk at the given path
+    ///
+    /// # Example
+    /// ```no_run
+    /// use kodegen_bundler_release::source::RepositorySource;
+    /// use std::path::PathBuf;
+    ///
+    /// let source = RepositorySource::Local(PathBuf::from("/path/to/repo"));
+    /// ```
     Local(PathBuf),
-    GitHub { owner: String, repo: String },
+
+    /// GitHub repository specified by owner and repo name
+    ///
+    /// # Example
+    /// ```no_run
+    /// use kodegen_bundler_release::source::RepositorySource;
+    ///
+    /// let source = RepositorySource::GitHub {
+    ///     owner: "cyrup-ai".to_string(),
+    ///     repo: "kodegen".to_string(),
+    /// };
+    /// ```
+    GitHub {
+        /// GitHub username or organization name
+        owner: String,
+        /// Repository name
+        repo: String
+    },
 }
 
 impl RepositorySource {
@@ -102,9 +128,33 @@ impl RepositorySource {
     }
 }
 
-/// Resolved repository with cleanup tracking
+/// Resolved repository with automatic cleanup
+///
+/// If `is_temp` is true, the repository directory will be automatically
+/// deleted when this struct is dropped. This ensures temporary clones
+/// are cleaned up even if an error occurs.
+///
+/// # Example
+/// ```no_run
+/// use kodegen_bundler_release::source::ResolvedRepo;
+/// use std::path::PathBuf;
+///
+/// let repo = ResolvedRepo {
+///     path: PathBuf::from("/tmp/my-repo"),
+///     is_temp: true,  // Will be deleted on drop
+/// };
+/// // ... use repo.path ...
+/// // Automatically cleaned up here
+/// ```
 pub struct ResolvedRepo {
+    /// Absolute path to the repository root directory
     pub path: PathBuf,
+
+    /// Whether this is a temporary directory that should be cleaned up on drop
+    ///
+    /// If `true`, the directory at `path` will be recursively deleted when
+    /// this struct is dropped. Set to `false` for local repositories that
+    /// should persist.
     pub is_temp: bool,
 }
 

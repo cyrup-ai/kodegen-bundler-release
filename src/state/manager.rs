@@ -60,14 +60,27 @@ struct FileLock {
     _pid: u32,
     /// Timestamp when lock was acquired
     _acquired_at: SystemTime,
-    /// File handle that holds the flock
-    /// CRITICAL: Must be kept alive for lock to remain held.
-    /// The flock is automatically released when this file handle is dropped.
-    /// See Drop implementation at line 625.
+    /// Platform-specific lock storage
+    /// On Unix: RAII Flock guard that auto-unlocks on drop
+    /// On other platforms: File handle that holds the lock
+    #[cfg(unix)]
+    _lock_guard: nix::fcntl::Flock<std::fs::File>,
+    #[cfg(not(unix))]
     _lock_handle: std::fs::File,
 }
 
-/// Result of attempting to acquire platform lock
+/// Error type for lock acquisition (Unix only)
+#[cfg(unix)]
+#[derive(Debug)]
+enum LockError {
+    /// Lock held by another process (file returned for retry)
+    Busy(std::fs::File),
+    /// Unrecoverable error
+    Error(String),
+}
+
+/// Result of attempting to acquire platform lock (non-Unix platforms)
+#[cfg(not(unix))]
 #[derive(Debug)]
 enum LockResult {
     /// Lock successfully acquired
@@ -345,10 +358,29 @@ impl StateManager {
             }
 
             // Step 1: Open or create lock file
+            #[cfg(unix)]
+            let file = match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&self.lock_file_path)
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    return Err(StateError::SaveFailed {
+                        reason: format!("Failed to open lock file: {}", e),
+                    }
+                    .into());
+                }
+            };
+            
+            #[cfg(not(unix))]
             let mut file = match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&self.lock_file_path)
             {
                 Ok(f) => f,
@@ -361,38 +393,102 @@ impl StateManager {
             };
 
             // Step 2: Try to acquire platform-specific lock
-            #[cfg(not(any(unix, windows)))]
-            let lock_result = try_platform_lock_with_metadata(&file, self.config.stale_lock_timeout_seconds);
-            
-            #[cfg(any(unix, windows))]
-            let lock_result = try_platform_lock(&file);
+            #[cfg(unix)]
+            {
+                // Unix: Use RAII Flock wrapper (takes ownership)
+                match try_platform_lock(file) {
+                    Ok(mut flock_guard) => {
+                        // Step 3: Write lock metadata using auto-deref to underlying File
+                        write_lock_metadata(&mut flock_guard)?;
 
-            match lock_result {
-                LockResult::Acquired => {
-                    // Step 3: Write lock metadata
-                    write_lock_metadata(&mut file)?;
+                        // Step 4: Store lock guard (keeps lock alive, auto-unlocks on drop)
+                        self.lock_handle = Some(FileLock {
+                            _lock_file: self.lock_file_path.clone(),
+                            _pid: std::process::id(),
+                            _acquired_at: SystemTime::now(),
+                            _lock_guard: flock_guard,
+                        });
 
-                    // Step 4: Store lock handle (keeps lock alive)
-                    self.lock_handle = Some(FileLock {
-                        _lock_file: self.lock_file_path.clone(),
-                        _pid: std::process::id(),
-                        _acquired_at: SystemTime::now(),
-                        _lock_handle: file,
-                    });
-
-                    return Ok(());
-                }
-                LockResult::Busy => {
-                    // Lock held by another process - wait and retry
-                    drop(file);
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-                LockResult::Error(msg) => {
-                    return Err(StateError::SaveFailed {
-                        reason: format!("Lock acquisition failed: {}", msg),
+                        return Ok(());
                     }
-                    .into());
+                    Err(LockError::Busy(returned_file)) => {
+                        // Lock held by another process - wait and retry
+                        drop(returned_file);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    Err(LockError::Error(msg)) => {
+                        return Err(StateError::SaveFailed {
+                            reason: format!("Lock acquisition failed: {}", msg),
+                        }
+                        .into());
+                    }
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                // Windows: Use LockFileEx with borrowed file
+                match try_platform_lock(&file) {
+                    LockResult::Acquired => {
+                        // Step 3: Write lock metadata
+                        write_lock_metadata(&mut file)?;
+
+                        // Step 4: Store lock handle (keeps lock alive)
+                        self.lock_handle = Some(FileLock {
+                            _lock_file: self.lock_file_path.clone(),
+                            _pid: std::process::id(),
+                            _acquired_at: SystemTime::now(),
+                            _lock_handle: file,
+                        });
+
+                        return Ok(());
+                    }
+                    LockResult::Busy => {
+                        // Lock held by another process - wait and retry
+                        drop(file);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    LockResult::Error(msg) => {
+                        return Err(StateError::SaveFailed {
+                            reason: format!("Lock acquisition failed: {}", msg),
+                        }
+                        .into());
+                    }
+                }
+            }
+
+            #[cfg(not(any(unix, windows)))]
+            {
+                // Fallback: Use age-based stale detection
+                match try_platform_lock_with_metadata(&file, self.config.stale_lock_timeout_seconds) {
+                    LockResult::Acquired => {
+                        // Step 3: Write lock metadata
+                        write_lock_metadata(&mut file)?;
+
+                        // Step 4: Store lock handle (keeps lock alive)
+                        self.lock_handle = Some(FileLock {
+                            _lock_file: self.lock_file_path.clone(),
+                            _pid: std::process::id(),
+                            _acquired_at: SystemTime::now(),
+                            _lock_handle: file,
+                        });
+
+                        return Ok(());
+                    }
+                    LockResult::Busy => {
+                        // Lock held by another process - wait and retry
+                        drop(file);
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    LockResult::Error(msg) => {
+                        return Err(StateError::SaveFailed {
+                            reason: format!("Lock acquisition failed: {}", msg),
+                        }
+                        .into());
+                    }
                 }
             }
         }
@@ -438,17 +534,19 @@ fn write_lock_metadata(file: &mut std::fs::File) -> Result<()> {
     Ok(())
 }
 
-/// Try to acquire exclusive lock using flock (Unix)
+/// Try to acquire exclusive lock using Flock RAII wrapper (Unix)
 #[cfg(unix)]
-fn try_platform_lock(file: &std::fs::File) -> LockResult {
-    use nix::fcntl::{flock, FlockArg};
-    use std::os::unix::io::AsRawFd;
+fn try_platform_lock(file: std::fs::File) -> std::result::Result<nix::fcntl::Flock<std::fs::File>, LockError> {
+    use nix::fcntl::{Flock, FlockArg};
 
-    #[allow(deprecated)]  // TODO: Upgrade to nix::fcntl::Flock RAII wrapper
-    match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
-        Ok(()) => LockResult::Acquired,
-        Err(e) if e == nix::errno::Errno::EWOULDBLOCK => LockResult::Busy,
-        Err(e) => LockResult::Error(format!("flock error: {}", e)),
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(guard) => Ok(guard),
+        Err((file, e)) if e == nix::errno::Errno::EWOULDBLOCK => {
+            Err(LockError::Busy(file))
+        }
+        Err((_file, e)) => {
+            Err(LockError::Error(format!("flock error: {}", e)))
+        }
     }
 }
 

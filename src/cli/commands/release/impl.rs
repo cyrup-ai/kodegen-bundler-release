@@ -93,17 +93,77 @@ pub(super) async fn perform_release_single_repo(
     let release_id = release_result.release_id;
     
     // ===== PHASE 4: BUILD BINARY =====
-    config.println(&format!("🔨 Building binary '{}'...", binary_name));
-    
-    super::super::helpers::build_binary(temp_dir, &binary_name, true, config)?;
-    config.success_println("✓ Build complete");
+    if options.universal && cfg!(target_os = "macos") {
+        config.println(&format!("🔨 Building universal binary '{}' (x86_64 + arm64)...", binary_name));
+        
+        // Build for Intel (x86_64)
+        config.verbose_println("  Building for x86_64 (Intel)...");
+        super::super::helpers::build_for_target(
+            temp_dir, 
+            &binary_name, 
+            "x86_64-apple-darwin", 
+            config
+        )?;
+        
+        // Build for Apple Silicon (arm64)
+        config.verbose_println("  Building for aarch64 (Apple Silicon)...");
+        super::super::helpers::build_for_target(
+            temp_dir, 
+            &binary_name, 
+            "aarch64-apple-darwin", 
+            config
+        )?;
+        
+        // Create universal binaries using lipo
+        config.verbose_println("  Merging architectures with lipo...");
+        let output_dir = temp_dir.join("target/universal/release");
+        let universal_binaries = crate::bundler::platform::macos::universal::create_universal_binaries(
+            temp_dir,
+            &output_dir,
+        )?;
+        
+        // Copy universal binary to target/release for bundler pickup
+        // (bundler expects binaries at target/release/)
+        let release_dir = temp_dir.join("target/release");
+        std::fs::create_dir_all(&release_dir).map_err(|e| {
+            ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "create_release_dir".to_string(),
+                reason: format!("Failed to create release directory {}: {}", release_dir.display(), e),
+            })
+        })?;
+        
+        for universal_bin in &universal_binaries {
+            if let Some(filename) = universal_bin.file_name() {
+                let dest = release_dir.join(filename);
+                std::fs::copy(universal_bin, &dest).map_err(|e| {
+                    ReleaseError::Cli(CliError::ExecutionFailed {
+                        command: "copy_universal_binary".to_string(),
+                        reason: format!("Failed to copy {} to release dir: {}", filename.to_string_lossy(), e),
+                    })
+                })?;
+                config.verbose_println(&format!("  Copied {} to target/release/", filename.to_string_lossy()));
+            }
+        }
+        
+        config.success_println("✓ Universal binary created (supports Intel + Apple Silicon)");
+    } else if options.universal && !cfg!(target_os = "macos") {
+        // User requested universal but not on macOS - inform and continue
+        config.warning_println("⚠️  --universal flag ignored (only supported on macOS)");
+        config.println(&format!("🔨 Building binary '{}'...", binary_name));
+        super::super::helpers::build_binary(temp_dir, &binary_name, true, config)?;
+        config.success_println("✓ Build complete");
+    } else {
+        // Standard single-architecture build
+        config.println(&format!("🔨 Building binary '{}'...", binary_name));
+        super::super::helpers::build_binary(temp_dir, &binary_name, true, config)?;
+        config.success_println("✓ Build complete");
+    }
     
     // ===== PHASE 5: CREATE PLATFORM PACKAGES =====
     config.println("📦 Creating platform installers...");
     
-    let temp_dir_pathbuf = temp_dir.to_path_buf();
     let bundled_artifacts = create_bundles(
-        &temp_dir_pathbuf,
+        temp_dir,
         &metadata,
         &binary_name,
         &new_version,
@@ -135,7 +195,7 @@ pub(super) async fn perform_release_single_repo(
             // Upload immediately and CAPTURE download URLs
             let download_urls = github_manager.upload_artifacts(
                 release_id,
-                &[artifact_path.clone()],
+                std::slice::from_ref(artifact_path),
                 config,
             ).await?;
             

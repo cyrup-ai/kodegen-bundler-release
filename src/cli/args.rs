@@ -58,6 +58,10 @@ pub struct Args {
     #[arg(long, value_name = "OWNER/REPO")]
     pub github_repo: Option<String>,
 
+    /// Create universal binaries for macOS (x86_64 + arm64)
+    #[arg(long)]
+    pub universal: bool,
+
     // ===== GLOBAL FLAGS =====
 
     /// Enable verbose output
@@ -79,6 +83,32 @@ pub struct Args {
     /// Configuration file path
     #[arg(short, long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
+
+    // ===== DOCKER CONTAINER LIMITS =====
+
+    /// Docker container memory limit (e.g., "2g", "4096m")
+    /// 
+    /// Defaults to auto-detected safe limit (50% of host RAM, min 2GB, max 16GB)
+    #[arg(long, env = "KODEGEN_DOCKER_MEMORY")]
+    pub docker_memory: Option<String>,
+
+    /// Docker container memory + swap limit (e.g., "6g", "8192m")
+    /// 
+    /// Must be ≥ memory limit. Defaults to memory + 2GB if not specified.
+    #[arg(long, env = "KODEGEN_DOCKER_MEMORY_SWAP")]
+    pub docker_memory_swap: Option<String>,
+
+    /// Docker container CPU limit (e.g., "2.0", "4", "1.5")
+    /// 
+    /// Supports fractional values. Defaults to auto-detected (50% of host cores, min 2)
+    #[arg(long, env = "KODEGEN_DOCKER_CPUS")]
+    pub docker_cpus: Option<String>,
+
+    /// Docker container process limit
+    /// 
+    /// Maximum number of processes. Defaults to 1000.
+    #[arg(long, env = "KODEGEN_DOCKER_PIDS_LIMIT")]
+    pub docker_pids_limit: Option<u32>,
 }
 
 
@@ -199,6 +229,14 @@ pub struct RuntimeConfig {
     pub registry: Option<String>,
     /// Output manager for colored terminal output
     output: super::OutputManager,
+    /// Docker container memory limit
+    pub docker_memory: Option<String>,
+    /// Docker container memory + swap limit  
+    pub docker_memory_swap: Option<String>,
+    /// Docker container CPU limit
+    pub docker_cpus: Option<String>,
+    /// Docker container process limit
+    pub docker_pids_limit: Option<u32>,
 }
 
 /// Verbosity level for output
@@ -233,6 +271,11 @@ impl From<&Args> for RuntimeConfig {
             verbosity,
             registry: args.registry.clone(),
             output,
+            // Docker container limits
+            docker_memory: args.docker_memory.clone(),
+            docker_memory_swap: args.docker_memory_swap.clone(),
+            docker_cpus: args.docker_cpus.clone(),
+            docker_pids_limit: args.docker_pids_limit,
         }
     }
 }

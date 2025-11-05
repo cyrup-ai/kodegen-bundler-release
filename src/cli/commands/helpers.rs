@@ -2,7 +2,7 @@
 
 use crate::error::{CliError, ReleaseError, Result};
 use crate::git::GitManager;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Parse GitHub repository string into owner/repo tuple
 #[allow(dead_code)]
@@ -95,7 +95,7 @@ pub(super) async fn detect_github_repo(git_manager: &GitManager) -> Result<(Stri
 
 /// Create distributable bundles for the release
 pub(super) async fn create_bundles(
-    repo_path: &PathBuf,
+    repo_path: &Path,
     metadata: &crate::metadata::PackageMetadata,
     binary_name: &str,
     version: &semver::Version,
@@ -220,10 +220,25 @@ pub(super) async fn create_bundles(
         // Ensure builder image exists (never rebuild during release for consistency)
         crate::cli::docker::ensure_image_built(repo_path, false, _config).await?;
 
-        // Create container bundler with default resource limits
+        // Create container bundler with user-specified or default resource limits
+        let limits = if let Some(memory) = &_config.docker_memory {
+            crate::cli::docker::ContainerLimits::from_cli(
+                memory.clone(),
+                _config.docker_memory_swap.clone(),
+                _config.docker_cpus.clone(),
+                _config.docker_pids_limit.unwrap_or(1000),
+            ).map_err(|e| {
+                ReleaseError::Cli(CliError::InvalidArguments {
+                    reason: format!("Invalid Docker container limits: {}", e),
+                })
+            })?
+        } else {
+            crate::cli::docker::ContainerLimits::default()
+        };
+
         let container = crate::cli::docker::ContainerBundler::with_limits(
-            repo_path.clone(),
-            crate::cli::docker::ContainerLimits::default(),
+            repo_path.to_path_buf(),
+            limits,
         );
 
         // Bundle each platform in container
@@ -270,6 +285,7 @@ pub(super) async fn create_bundles(
 ///     return Ok(());
 /// }
 /// ```
+#[allow(dead_code)]
 pub(super) fn prompt_confirmation(prompt: &str) -> std::io::Result<bool> {
     use std::io::Write;
     
@@ -350,6 +366,58 @@ pub(crate) fn build_binary(
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: "cargo_build".to_string(),
             reason: format!("Failed to build binary '{}':\n{}", binary_name, stderr),
+        }));
+    }
+
+    Ok(())
+}
+
+/// Build binary for a specific target architecture
+///
+/// Similar to build_binary() but with --target flag for cross-compilation.
+///
+/// # Arguments
+/// * `repo_path` - Repository root directory
+/// * `binary_name` - Name of the binary to build
+/// * `target` - Rust target triple (e.g., "x86_64-apple-darwin")
+/// * `config` - Runtime configuration for output
+pub(crate) fn build_for_target(
+    repo_path: &std::path::Path,
+    binary_name: &str,
+    target: &str,
+    config: &crate::cli::RuntimeConfig,
+) -> Result<()> {
+    use std::process::Command;
+
+    config.verbose_println(&format!(
+        "Building binary '{}' for target {}",
+        binary_name, target
+    ));
+
+    let output = Command::new("cargo")
+        .current_dir(repo_path)
+        .arg("build")
+        .arg("--bin")
+        .arg(binary_name)
+        .arg("--release")
+        .arg("--target")
+        .arg(target)
+        .output()
+        .map_err(|e| {
+            ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "cargo_build_target".to_string(),
+                reason: e.to_string(),
+            })
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo_build_target".to_string(),
+            reason: format!(
+                "Failed to build binary '{}' for target '{}':\n{}",
+                binary_name, target, stderr
+            ),
         }));
     }
 

@@ -67,6 +67,9 @@ pub(super) async fn clone_main_to_temp_for_release(
             })
         })?;
 
+    // Track temp path for recovery
+    save_active_temp_path(&temp_dir)?;
+
     Ok(temp_dir)
 }
 

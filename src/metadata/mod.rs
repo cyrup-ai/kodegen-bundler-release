@@ -5,11 +5,22 @@ use std::path::Path;
 
 /// Package metadata extracted from Cargo.toml
 pub struct PackageMetadata {
+    /// Package name from Cargo.toml
     pub name: String,
+
+    /// Package description from Cargo.toml
     pub description: String,
+
+    /// Package version from Cargo.toml (e.g., "0.1.0")
     pub version: String,
+
+    /// List of package authors from Cargo.toml
     pub authors: Vec<String>,
+
+    /// SPDX license identifier (e.g., "Apache-2.0 OR MIT")
     pub license: Option<String>,
+
+    /// Homepage URL if specified in Cargo.toml
     pub homepage: Option<String>,
 }
 
@@ -103,12 +114,14 @@ pub fn discover_binary(cargo_toml_path: &Path) -> Result<String> {
 
     // REUSE binary discovery pattern from helpers.rs:25-34
     // Try [[bin]] section first
-    if let Some(bin_array) = toml_value.get("bin").and_then(|v| v.as_array()) {
-        if let Some(first) = bin_array.first() {
-            if let Some(name) = first.get("name").and_then(|v| v.as_str()) {
-                return Ok(name.to_string());
-            }
-        }
+    if let Some(name) = toml_value
+        .get("bin")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("name"))
+        .and_then(|v| v.as_str())
+    {
+        return Ok(name.to_string());
     }
 
     // Fallback to package name

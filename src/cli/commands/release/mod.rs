@@ -16,6 +16,7 @@ pub(super) struct ReleaseOptions {
     pub no_push: bool,
     pub registry: Option<String>,
     pub github_repo: Option<String>,
+    pub universal: bool,
 }
 
 
@@ -73,7 +74,13 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
         no_push: args.no_push,
         registry: args.registry.clone(),
         github_repo: args.github_repo.clone(),
+        universal: args.universal,
     };
+
+    // Provide user feedback for dry-run mode
+    if options.dry_run {
+        config.println("🔍 DRY RUN MODE: No changes will be made to repository or registry");
+    }
 
     // 6. Execute release in temp (NO workspace parameter)
     let result = r#impl::perform_release_single_repo(
@@ -89,6 +96,11 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
         match std::fs::remove_dir_all(&temp_dir_pathbuf) {
             Ok(()) => {
                 config.verbose_println("✅ Temp clone cleaned up");
+                
+                // Clear temp path tracking after successful cleanup
+                if let Err(e) = super::temp_clone::clear_active_temp_path() {
+                    config.verbose_println(&format!("Warning: Failed to clear temp path tracking: {}", e));
+                }
             }
             Err(e) => {
                 config.warning_println(&format!("Failed to cleanup temp directory: {}", e));
@@ -96,6 +108,9 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
                     "You may need to manually remove: {}",
                     temp_dir_pathbuf.display()
                 ));
+                
+                // Still clear tracking - user will manually clean up temp dir
+                let _ = super::temp_clone::clear_active_temp_path();
             }
         }
     }
