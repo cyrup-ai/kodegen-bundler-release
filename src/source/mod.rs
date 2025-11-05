@@ -160,8 +160,36 @@ pub struct ResolvedRepo {
 
 impl Drop for ResolvedRepo {
     fn drop(&mut self) {
-        if self.is_temp {
-            let _ = std::fs::remove_dir_all(&self.path);
+        if !self.is_temp {
+            return;
+        }
+
+        // Try cleanup with brief retries for transient failures
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 100;
+
+        for attempt in 0..MAX_RETRIES {
+            match std::fs::remove_dir_all(&self.path) {
+                Ok(()) => return, // Success - cleanup complete
+                Err(_e) if attempt < MAX_RETRIES - 1 => {
+                    // Transient failure - retry after brief delay
+                    // (files may be briefly locked by OS indexing, etc.)
+                    std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                }
+                Err(e) => {
+                    // Final attempt failed - warn user
+                    eprintln!(
+                        "⚠ Warning: Failed to cleanup temporary repository after {} attempts.\n\
+                         Path: {}\n\
+                         Error: {}\n\
+                         \n\
+                         This temporary directory may need manual cleanup to free disk space.",
+                        MAX_RETRIES,
+                        self.path.display(),
+                        e
+                    );
+                }
+            }
         }
     }
 }

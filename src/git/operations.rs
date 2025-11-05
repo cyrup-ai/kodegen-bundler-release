@@ -89,6 +89,9 @@ pub trait GitOperations {
 
     /// Merge another branch into the current branch
     fn merge_branch(&self, branch_name: &str) -> impl Future<Output = Result<()>>;
+
+    /// Abort an in-progress merge and clean up merge state
+    fn abort_merge(&self) -> impl Future<Output = Result<()>>;
 }
 
 /// Information about a Git commit

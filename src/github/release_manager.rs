@@ -5,6 +5,7 @@ use bytes::Bytes;
 use kodegen_tools_github::{GitHubClient, GitHubReleaseOptions};
 use semver::Version;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Configuration for GitHub releases
@@ -60,12 +61,24 @@ pub struct GitHubReleaseManager {
     config: GitHubReleaseConfig,
 }
 
+/// One-time initialization guard for rustls crypto provider
+/// 
+/// Ensures install_default() is called exactly once per process, even when
+/// GitHubReleaseManager::new() is called multiple times. This follows rustls
+/// official best practices for provider initialization.
+static RUSTLS_INITIALIZED: OnceLock<()> = OnceLock::new();
+
 impl GitHubReleaseManager {
     /// Create new GitHub release manager
     pub fn new(config: GitHubReleaseConfig) -> Result<Self> {
-        // Initialize rustls crypto provider (required for TLS connections)
-        // This is idempotent - safe to call multiple times
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Initialize rustls crypto provider exactly once per process
+        // Uses OnceLock to ensure install_default() succeeds on first call only
+        RUSTLS_INITIALIZED.get_or_init(|| {
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .expect("Failed to install rustls crypto provider. \
+                        Another provider may already be installed by application code.")
+        });
         
         // Get token from config or environment
         let token = config.token.clone()

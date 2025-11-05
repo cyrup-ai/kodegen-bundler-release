@@ -24,8 +24,28 @@ pub struct PackageMetadata {
     pub homepage: Option<String>,
 }
 
-/// Extract metadata from Cargo.toml [package] section
-pub fn extract_metadata(cargo_toml_path: &Path) -> Result<PackageMetadata> {
+/// Complete manifest data from Cargo.toml
+pub struct CargoManifest {
+    /// Package metadata ([package] section)
+    pub metadata: PackageMetadata,
+    
+    /// Primary binary name (from [[bin]] or package.name)
+    pub binary_name: String,
+}
+
+/// Load complete manifest from Cargo.toml (single read + parse)
+///
+/// This function reads and parses Cargo.toml exactly once, then extracts
+/// both metadata and binary name from the parsed TOML value.
+///
+/// ## Performance
+/// Replaces two separate read+parse operations with one atomic operation.
+///
+/// ## Pattern
+/// Follows the same optimization used in workspace/analyzer.rs:145-157
+/// where root Cargo.toml is parsed once and passed to multiple functions.
+pub fn load_manifest(cargo_toml_path: &Path) -> Result<CargoManifest> {
+    // Step 1: Read file once
     let manifest = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
         ReleaseError::Cli(CliError::ExecutionFailed {
             command: "read_cargo_toml".to_string(),
@@ -33,6 +53,7 @@ pub fn extract_metadata(cargo_toml_path: &Path) -> Result<PackageMetadata> {
         })
     })?;
 
+    // Step 2: Parse TOML once
     let toml_value: toml::Value = toml::from_str(&manifest).map_err(|e| {
         ReleaseError::Cli(CliError::ExecutionFailed {
             command: "parse_cargo_toml".to_string(),
@@ -46,8 +67,8 @@ pub fn extract_metadata(cargo_toml_path: &Path) -> Result<PackageMetadata> {
         })
     })?;
 
-    // REUSE PackageConfig pattern from workspace/analyzer.rs:76-98
-    Ok(PackageMetadata {
+    // Step 3: Extract metadata from parsed TOML (no additional I/O)
+    let metadata = PackageMetadata {
         name: package
             .get("name")
             .and_then(|v| v.as_str())
@@ -93,47 +114,32 @@ pub fn extract_metadata(cargo_toml_path: &Path) -> Result<PackageMetadata> {
             .get("homepage")
             .and_then(|v| v.as_str())
             .map(String::from),
-    })
-}
+    };
 
-/// Auto-discover binary name from Cargo.toml
-pub fn discover_binary(cargo_toml_path: &Path) -> Result<String> {
-    let manifest = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
-        ReleaseError::Cli(CliError::ExecutionFailed {
-            command: "read_cargo_toml".to_string(),
-            reason: format!("Failed to read {}: {}", cargo_toml_path.display(), e),
-        })
-    })?;
-
-    let toml_value: toml::Value = toml::from_str(&manifest).map_err(|e| {
-        ReleaseError::Cli(CliError::ExecutionFailed {
-            command: "parse_cargo_toml".to_string(),
-            reason: format!("Failed to parse Cargo.toml: {}", e),
-        })
-    })?;
-
-    // REUSE binary discovery pattern from helpers.rs:25-34
+    // Step 4: Discover binary name from parsed TOML (no additional I/O)
     // Try [[bin]] section first
-    if let Some(name) = toml_value
+    let binary_name = toml_value
         .get("bin")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|first| first.get("name"))
         .and_then(|v| v.as_str())
-    {
-        return Ok(name.to_string());
-    }
+        .map(String::from)
+        .or_else(|| {
+            // Fallback to package name
+            package
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .ok_or_else(|| {
+            ReleaseError::Cli(CliError::InvalidArguments {
+                reason: "No binary found in Cargo.toml".to_string(),
+            })
+        })?;
 
-    // Fallback to package name
-    if let Some(name) = toml_value
-        .get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|v| v.as_str())
-    {
-        return Ok(name.to_string());
-    }
-
-    Err(ReleaseError::Cli(CliError::InvalidArguments {
-        reason: "No binary found in Cargo.toml".to_string(),
-    }))
+    Ok(CargoManifest {
+        metadata,
+        binary_name,
+    })
 }

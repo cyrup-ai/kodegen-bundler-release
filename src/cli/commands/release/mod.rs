@@ -31,8 +31,9 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
 
     // 2. Extract metadata from single Cargo.toml (NO workspace analysis)
     let cargo_toml = resolved.path.join("Cargo.toml");
-    let metadata = crate::metadata::extract_metadata(&cargo_toml)?;
-    let binary_name = crate::metadata::discover_binary(&cargo_toml)?;
+    let manifest = crate::metadata::load_manifest(&cargo_toml)?;
+    let metadata = manifest.metadata;
+    let binary_name = manifest.binary_name;
     
     config.verbose_println(&format!("✓ Package: {}", metadata.name));
     config.verbose_println(&format!("✓ Binary: {}", binary_name));

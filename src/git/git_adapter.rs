@@ -617,4 +617,40 @@ impl GitOperations for KodegenGitOperations {
             MergeOutcome::AlreadyUpToDate => Ok(()),
         }
     }
+
+    async fn abort_merge(&self) -> Result<()> {
+        use kodegen_tools_git::operations::reset::reset_hard;
+        
+        // Step 1: Reset working directory and index to HEAD
+        reset_hard(&self.repo, "HEAD")
+            .await
+            .map_err(|e| GitError::BranchOperationFailed {
+                reason: format!("Failed to reset during merge abort: {}", e),
+            })?;
+
+        // Step 2: Clean up merge state files
+        let git_dir = self.repo.raw().path();
+        
+        let merge_files = [
+            git_dir.join("MERGE_HEAD"),
+            git_dir.join("MERGE_MSG"),
+            git_dir.join("MERGE_MODE"),
+        ];
+
+        for file in &merge_files {
+            if file.exists() {
+                std::fs::remove_file(file).map_err(|e| {
+                    GitError::BranchOperationFailed {
+                        reason: format!(
+                            "Failed to remove merge state file {}: {}",
+                            file.display(),
+                            e
+                        ),
+                    }
+                })?;
+            }
+        }
+
+        Ok(())
+    }
 }

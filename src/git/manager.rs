@@ -20,7 +20,7 @@ pub struct GitManager {
     /// Configuration for Git operations
     config: GitConfig,
     /// Release state tracking
-    release_state: ReleaseState,
+    release_state: RefCell<ReleaseState>,
 }
 
 /// Configuration for Git operations
@@ -110,7 +110,7 @@ impl GitManager {
     pub async fn new<P: AsRef<Path>>(repo_path: P) -> Result<Self> {
         let repository = KodegenGitOperations::open(repo_path).await?;
         let config = GitConfig::default();
-        let release_state = ReleaseState::default();
+        let release_state = RefCell::new(ReleaseState::default());
 
         Ok(Self {
             repository,
@@ -122,7 +122,7 @@ impl GitManager {
     /// Create a Git manager with custom configuration
     pub async fn with_config<P: AsRef<Path>>(repo_path: P, config: GitConfig) -> Result<Self> {
         let repository = KodegenGitOperations::open(repo_path).await?;
-        let release_state = ReleaseState::default();
+        let release_state = RefCell::new(ReleaseState::default());
 
         Ok(Self {
             repository,
@@ -143,7 +143,7 @@ impl GitManager {
     /// 7. Pushes release branch with tags to remote (if requested)
     /// 8. ALWAYS returns to main branch (using checkout, never reset)
     pub async fn perform_release(
-        &mut self,
+        &self,
         version: &Version,
         push_to_remote: bool,
     ) -> Result<ReleaseResult> {
@@ -195,18 +195,32 @@ impl GitManager {
         // Step 4: Merge work from original branch (ONLY if not already on main AND not a release branch)
         // Release branches (starting with 'v') should NOT be merged back into main
         let is_release_branch = original_branch_name.starts_with('v');
-        if original_branch_name != "main"
-            && !is_release_branch
-            && let Err(e) = self.repository.merge_branch(&original_branch_name).await
-        {
-            let recovery_instructions = self.get_recovery_instructions().await;
-            return Err(GitError::BranchOperationFailed {
-                reason: format!(
-                    "Failed to merge branch '{}' into main: {}. Recovery: {}",
-                    original_branch_name, e, recovery_instructions
-                ),
+        if original_branch_name != "main" && !is_release_branch {
+            match self.repository.merge_branch(&original_branch_name).await {
+                Ok(()) => {
+                    // Merge succeeded
+                }
+                Err(e) => {
+                    // Merge failed - abort it to clean up
+                    if let Err(abort_err) = self.repository.abort_merge().await {
+                        eprintln!(
+                            "Warning: Failed to abort merge: {}. \
+                             Repository may be in inconsistent state.",
+                            abort_err
+                        );
+                    }
+                    
+                    let recovery_instructions = self.get_recovery_instructions().await;
+                    return Err(GitError::BranchOperationFailed {
+                        reason: format!(
+                            "Failed to merge branch '{}' into main: {}. \
+                             Merge has been aborted. Recovery: {}",
+                            original_branch_name, e, recovery_instructions
+                        ),
+                    }
+                    .into());
+                }
             }
-            .into());
         }
 
         // Step 5: Create release branch matching the bumped version
@@ -225,7 +239,7 @@ impl GitManager {
         };
 
         // Track the created branch in release state for rollback
-        self.release_state.release_branch = Some(release_branch.clone());
+        self.release_state.borrow_mut().release_branch = Some(release_branch.clone());
 
         // Step 6: Commit version changes on release branch
         let commit_message = self.generate_commit_message(version);
@@ -246,7 +260,7 @@ impl GitManager {
                 .into());
             }
         };
-        self.release_state.release_commit = Some(commit.clone());
+        self.release_state.borrow_mut().release_commit = Some(commit.clone());
 
         // Step 7: Create version tag on release branch
         let tag_message = self.generate_tag_message(version);
@@ -267,7 +281,7 @@ impl GitManager {
                 .into());
             }
         };
-        self.release_state.release_tag = Some(tag.clone());
+        self.release_state.borrow_mut().release_tag = Some(tag.clone());
 
         // Step 8: Push release branch with tags to remote (if requested)
         let release_branch_push_info = if push_to_remote {
@@ -278,8 +292,9 @@ impl GitManager {
                 .await
             {
                 Ok(push_info) => {
-                    self.release_state.tags_pushed = true;
-                    self.release_state.branch_pushed = true;
+                    let mut state = self.release_state.borrow_mut();
+                    state.tags_pushed = true;
+                    state.branch_pushed = true;
                     Some(push_info)
                 }
                 Err(e) => {
@@ -328,7 +343,7 @@ impl GitManager {
     ///
     /// SAFE ROLLBACK: Only deletes tags, never uses git reset
     /// All work is preserved in commits - nothing is destroyed
-    pub async fn rollback_release(&mut self) -> Result<RollbackResult> {
+    pub async fn rollback_release(&self) -> Result<RollbackResult> {
         let start_time = std::time::Instant::now();
         let mut rolled_back_operations = Vec::new();
         let mut warnings = Vec::new();
@@ -337,32 +352,44 @@ impl GitManager {
         // Rollback in reverse order of operations
 
         // 1. Delete remote tag if it was pushed
-        if self.release_state.tags_pushed
-            && let Some(ref tag_info) = self.release_state.release_tag
-        {
-            match self.repository.delete_tag(&tag_info.name, true).await {
+        let tag_name = {
+            let state = self.release_state.borrow();
+            if state.tags_pushed && state.release_tag.is_some() {
+                state.release_tag.as_ref().map(|t| t.name.clone())
+            } else {
+                None
+            }
+        };
+        
+        if let Some(tag_name) = tag_name {
+            match self.repository.delete_tag(&tag_name, true).await {
                 Ok(()) => {
-                    rolled_back_operations.push(format!("Deleted remote tag {}", tag_info.name));
+                    rolled_back_operations.push(format!("Deleted remote tag {}", tag_name));
                 }
                 Err(e) => {
                     warnings.push(format!(
                         "Failed to delete remote tag {}: {}",
-                        tag_info.name, e
+                        tag_name, e
                     ));
                 }
             }
         }
 
         // 2. Delete local tag
-        if let Some(ref tag_info) = self.release_state.release_tag {
-            match self.repository.delete_tag(&tag_info.name, false).await {
+        let tag_name = {
+            let state = self.release_state.borrow();
+            state.release_tag.as_ref().map(|t| t.name.clone())
+        };
+        
+        if let Some(tag_name) = tag_name {
+            match self.repository.delete_tag(&tag_name, false).await {
                 Ok(()) => {
-                    rolled_back_operations.push(format!("Deleted local tag {}", tag_info.name));
+                    rolled_back_operations.push(format!("Deleted local tag {}", tag_name));
                 }
                 Err(e) => {
                     warnings.push(format!(
                         "Failed to delete local tag {}: {}",
-                        tag_info.name, e
+                        tag_name, e
                     ));
                     success = false;
                 }
@@ -370,20 +397,27 @@ impl GitManager {
         }
 
         // 3. Delete remote branch if it was pushed
-        if self.release_state.branch_pushed
-            && let Some(ref branch_info) = self.release_state.release_branch
-        {
-            match self.repository.delete_remote_branch("origin", &branch_info.name).await {
+        let branch_name = {
+            let state = self.release_state.borrow();
+            if state.branch_pushed && state.release_branch.is_some() {
+                state.release_branch.as_ref().map(|b| b.name.clone())
+            } else {
+                None
+            }
+        };
+        
+        if let Some(branch_name) = branch_name {
+            match self.repository.delete_remote_branch("origin", &branch_name).await {
                 Ok(()) => {
                     rolled_back_operations.push(format!(
                         "Deleted remote branch {}", 
-                        branch_info.name
+                        branch_name
                     ));
                 }
                 Err(e) => {
                     warnings.push(format!(
                         "Failed to delete remote branch {}: {}",
-                        branch_info.name, e
+                        branch_name, e
                     ));
                 }
             }
@@ -402,18 +436,23 @@ impl GitManager {
         }
 
         // 5. Delete local branch (safe now because we're on main)
-        if let Some(ref branch_info) = self.release_state.release_branch {
-            match self.repository.delete_branch(&branch_info.name, false).await {
+        let branch_name = {
+            let state = self.release_state.borrow();
+            state.release_branch.as_ref().map(|b| b.name.clone())
+        };
+        
+        if let Some(branch_name) = branch_name {
+            match self.repository.delete_branch(&branch_name, false).await {
                 Ok(()) => {
                     rolled_back_operations.push(format!(
                         "Deleted local branch {}", 
-                        branch_info.name
+                        branch_name
                     ));
                 }
                 Err(e) => {
                     warnings.push(format!(
                         "Failed to delete local branch {}: {}",
-                        branch_info.name, e
+                        branch_name, e
                     ));
                     success = false;
                 }
@@ -421,7 +460,7 @@ impl GitManager {
         }
 
         // Clear release state
-        self.release_state = ReleaseState::default();
+        *self.release_state.borrow_mut() = ReleaseState::default();
 
         let duration = start_time.elapsed();
 
@@ -554,17 +593,18 @@ impl GitManager {
 
     /// Check if there's an active release
     pub fn has_active_release(&self) -> bool {
-        self.release_state.release_commit.is_some() || self.release_state.release_tag.is_some()
+        let state = self.release_state.borrow();
+        state.release_commit.is_some() || state.release_tag.is_some()
     }
 
     /// Get current release state
-    pub fn release_state(&self) -> &ReleaseState {
-        &self.release_state
+    pub fn release_state(&self) -> ReleaseState {
+        self.release_state.borrow().clone()
     }
 
     /// Clear release state (call after successful completion)
-    pub fn clear_release_state(&mut self) {
-        self.release_state = ReleaseState::default();
+    pub fn clear_release_state(&self) {
+        *self.release_state.borrow_mut() = ReleaseState::default();
     }
 
     /// Create a backup point before starting operations
