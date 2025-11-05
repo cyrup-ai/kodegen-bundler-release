@@ -55,10 +55,6 @@ pub enum ReleaseError {
     #[error("GitHub error: {0}")]
     GitHub(String),
 
-    /// Bundler errors
-    #[error("Bundler error: {0}")]
-    Bundler(#[from] crate::bundler::Error),
-
     /// Generic errors from anyhow
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
