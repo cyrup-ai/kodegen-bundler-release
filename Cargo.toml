@@ -26,6 +26,9 @@ name = "kodegen_bundler_release"
 path = "src/lib.rs"
 
 [dependencies]
+# Bundler for creating platform packages
+kodegen_bundler_bundle = { path = "../kodegen-bundler-bundle" }
+
 # Git operations using pure Rust (no CLI)
 gix = "0.74"
 # Explicit dependencies to fix Docker build transitive dependency resolution
