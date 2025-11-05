@@ -166,11 +166,11 @@ impl GitManager {
                 }
                 Err(e) => {
                     // Failed to commit WIP - try to return to main and report status
-                    let recovery_status = self.safe_return_to_main().await;
+                    let recovery_instructions = self.get_recovery_instructions().await;
                     return Err(GitError::CommitFailed {
                         reason: format!(
                             "Failed to commit work-in-progress: {}. Recovery: {}",
-                            e, recovery_status
+                            e, recovery_instructions
                         ),
                     }
                     .into());
@@ -198,11 +198,11 @@ impl GitManager {
             && !is_release_branch
             && let Err(e) = self.repository.merge_branch(&original_branch_name).await
         {
-            let recovery_status = self.safe_return_to_main().await;
+            let recovery_instructions = self.get_recovery_instructions().await;
             return Err(GitError::BranchOperationFailed {
                 reason: format!(
                     "Failed to merge branch '{}' into main: {}. Recovery: {}",
-                    original_branch_name, e, recovery_status
+                    original_branch_name, e, recovery_instructions
                 ),
             }
             .into());
@@ -212,11 +212,11 @@ impl GitManager {
         let release_branch = match self.repository.create_release_branch(version).await {
             Ok(branch) => branch,
             Err(e) => {
-                let recovery_status = self.safe_return_to_main().await;
+                let recovery_instructions = self.get_recovery_instructions().await;
                 return Err(GitError::BranchOperationFailed {
                     reason: format!(
                         "Failed to create release branch: {}. Recovery: {}",
-                        e, recovery_status
+                        e, recovery_instructions
                     ),
                 }
                 .into());
@@ -235,11 +235,11 @@ impl GitManager {
         {
             Ok(c) => c,
             Err(e) => {
-                let recovery_status = self.safe_return_to_main().await;
+                let recovery_instructions = self.get_recovery_instructions().await;
                 return Err(GitError::CommitFailed {
                     reason: format!(
                         "Failed to create release commit: {}. Recovery: {}",
-                        e, recovery_status
+                        e, recovery_instructions
                     ),
                 }
                 .into());
@@ -256,11 +256,11 @@ impl GitManager {
         {
             Ok(t) => t,
             Err(e) => {
-                let recovery_status = self.safe_return_to_main().await;
+                let recovery_instructions = self.get_recovery_instructions().await;
                 return Err(GitError::CommitFailed {
                     reason: format!(
                         "Failed to create version tag: {}. Recovery: {}",
-                        e, recovery_status
+                        e, recovery_instructions
                     ),
                 }
                 .into());
@@ -282,11 +282,11 @@ impl GitManager {
                     Some(push_info)
                 }
                 Err(e) => {
-                    let recovery_status = self.safe_return_to_main().await;
+                    let recovery_instructions = self.get_recovery_instructions().await;
                     return Err(GitError::PushFailed {
                         reason: format!(
                             "Failed to push release branch: {}. Local changes preserved. Recovery: {}",
-                            e, recovery_status
+                            e, recovery_instructions
                         ),
                     }
                     .into());
@@ -604,15 +604,14 @@ impl GitManager {
         })
     }
 
-    /// Report current repository state without attempting recovery
+    /// Get recovery instructions for error reporting
     /// 
-    /// This method ONLY reports the current branch state and does NOT attempt
-    /// to checkout main. This prevents retrying a checkout operation that may
-    /// have already failed earlier in the release process.
+    /// Returns a formatted message describing the current repository state
+    /// and instructions for manual recovery. Does NOT perform any git operations.
     /// 
-    /// Used by error handlers to provide context about where the repository
-    /// was left after a failed operation.
-    async fn safe_return_to_main(&self) -> String {
+    /// Used by error handlers to provide context and recovery steps after
+    /// failed operations leave the repository in an intermediate state.
+    async fn get_recovery_instructions(&self) -> String {
         // Don't attempt checkout - just report current state
         match self.repository.get_current_branch().await {
             Ok(branch_info) => {

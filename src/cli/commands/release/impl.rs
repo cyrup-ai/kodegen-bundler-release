@@ -76,14 +76,17 @@ where
                 attempts += 1;
                 
                 // Determine wait time based on error type
+                const MAX_BACKOFF_SECONDS: u64 = 3600;  // Cap at 1 hour
+                
                 let wait_seconds = match &e {
                     ReleaseError::Publish(PublishError::RateLimitExceeded { retry_after_seconds }) => {
-                        // Use the exact wait time from the error
-                        *retry_after_seconds
+                        // Use the exact wait time from the error (but still cap it)
+                        (*retry_after_seconds).min(MAX_BACKOFF_SECONDS)
                     }
                     _ => {
-                        // Exponential backoff: 1s, 2s, 4s, 8s, ...
-                        2u64.pow(attempts - 1)
+                        // Exponential backoff with overflow protection: 1s, 2s, 4s, 8s, ..., max 3600s
+                        // Use saturating_pow to prevent panic, then cap at maximum
+                        2u64.saturating_pow(attempts - 1).min(MAX_BACKOFF_SECONDS)
                     }
                 };
                 
