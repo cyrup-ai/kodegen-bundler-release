@@ -201,7 +201,7 @@ async fn execute_phases_with_retry(
             None,
             true,  // rollback_capable
         );
-        crate::state::save_release_state(&release_state).await?;
+        crate::state::save_release_state(release_state).await?;
         config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)");
         
         Some(result)
@@ -280,7 +280,7 @@ async fn execute_phases_with_retry(
             })),
             true,  // rollback_capable
         );
-        crate::state::save_release_state(&release_state).await?;
+        crate::state::save_release_state(release_state).await?;
         config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)");
         
         release_id
@@ -442,7 +442,7 @@ async fn execute_phases_with_retry(
             })),
             false,  // Not rollback-capable (can't delete uploaded files easily)
         );
-        crate::state::save_release_state(&release_state).await?;
+        crate::state::save_release_state(release_state).await?;
         config.verbose_println("ℹ️  Saved progress checkpoint (Artifacts uploaded)");
     }
     
@@ -484,7 +484,7 @@ async fn execute_phases_with_retry(
             None,
             false,  // Can't unpublish
         );
-        crate::state::save_release_state(&release_state).await?;
+        crate::state::save_release_state(release_state).await?;
         config.verbose_println("ℹ️  Saved progress checkpoint (Release published)");
     }
     

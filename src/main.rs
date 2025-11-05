@@ -30,6 +30,12 @@ fn main() {
 /// when called from a single-threaded context. This function MUST be called before
 /// creating the Tokio runtime to avoid undefined behavior.
 fn parse_and_set_zshrc_env_vars() {
+    // Allow skipping .zshrc sourcing if problematic
+    // Useful for: CI environments, debugging, or when .zshrc has issues
+    if std::env::var("KODEGEN_SKIP_ZSHRC").is_ok() {
+        return;
+    }
+    
     // Source ~/.zshrc to load environment variables (APPLE_CERTIFICATE, etc.)
     // This is critical for code signing to work properly
     let Some(home) = dirs::home_dir() else {
