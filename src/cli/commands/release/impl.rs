@@ -323,6 +323,22 @@ async fn execute_phases_with_retry(
     
     config.success_println(&format!("✓ Uploaded {} artifact(s)", upload_count));
     
+    // ===== PHASE 7 PRECHECK: VERIFY RELEASE IS READY TO PUBLISH =====
+    config.println("🔍 Verifying release is ready to publish...");
+
+    if !github_manager.verify_release_is_draft(release_id).await? {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "publish_release".to_string(),
+            reason: format!(
+                "Release {} is not a draft or was deleted. Cannot publish.",
+                release_id
+            ),
+        }));
+    }
+
+    config.success_println("✓ Release verified as draft");
+    config.println("");
+
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
     config.println("✅ Publishing GitHub release...");
     
