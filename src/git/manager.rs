@@ -60,10 +60,14 @@ pub struct ReleaseState {
     release_commit: Option<CommitInfo>,
     /// Tag created for this release
     release_tag: Option<TagInfo>,
+    /// Branch created for this release
+    release_branch: Option<BranchInfo>,
     /// Whether commits have been pushed
     commits_pushed: bool,
     /// Whether tags have been pushed
     tags_pushed: bool,
+    /// Whether branch has been pushed
+    branch_pushed: bool,
     /// Previous HEAD before release (for rollback)
     previous_head: Option<String>,
 }
@@ -219,6 +223,9 @@ impl GitManager {
             }
         };
 
+        // Track the created branch in release state for rollback
+        self.release_state.release_branch = Some(release_branch.clone());
+
         // Step 6: Commit version changes on release branch
         let commit_message = self.generate_commit_message(version);
         let commit = match self
@@ -271,6 +278,7 @@ impl GitManager {
             {
                 Ok(push_info) => {
                     self.release_state.tags_pushed = true;
+                    self.release_state.branch_pushed = true;
                     Some(push_info)
                 }
                 Err(e) => {
@@ -360,13 +368,54 @@ impl GitManager {
             }
         }
 
-        // 3. Return to main branch (safe - no reset, just checkout)
+        // 3. Delete remote branch if it was pushed
+        if self.release_state.branch_pushed
+            && let Some(ref branch_info) = self.release_state.release_branch
+        {
+            match self.repository.delete_remote_branch("origin", &branch_info.name).await {
+                Ok(()) => {
+                    rolled_back_operations.push(format!(
+                        "Deleted remote branch {}", 
+                        branch_info.name
+                    ));
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "Failed to delete remote branch {}: {}",
+                        branch_info.name, e
+                    ));
+                }
+            }
+        }
+
+        // 4. Return to main branch (safe - no reset, just checkout)
+        // NOTE: This MUST happen before deleting local branch because
+        // delete_branch has a safety check preventing deletion of current branch
         match self.repository.checkout_branch("main").await {
             Ok(()) => {
                 rolled_back_operations.push("Returned to main branch".to_string());
             }
             Err(e) => {
                 warnings.push(format!("Failed to checkout main branch: {}", e));
+            }
+        }
+
+        // 5. Delete local branch (safe now because we're on main)
+        if let Some(ref branch_info) = self.release_state.release_branch {
+            match self.repository.delete_branch(&branch_info.name, false).await {
+                Ok(()) => {
+                    rolled_back_operations.push(format!(
+                        "Deleted local branch {}", 
+                        branch_info.name
+                    ));
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "Failed to delete local branch {}: {}",
+                        branch_info.name, e
+                    ));
+                    success = false;
+                }
             }
         }
 
