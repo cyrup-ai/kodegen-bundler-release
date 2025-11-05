@@ -665,6 +665,22 @@ pub(super) async fn perform_release_single_repo(
             reason: e.to_string(),
         }))?;
     
+    // ===== PHASE 0.5: VALIDATE TEMP CLONE IS CLEAN =====
+    // Create git_manager early to validate temp clone and for cleanup operations
+    let git_config = GitConfig {
+        default_remote: "origin".to_string(),
+        annotated_tags: true,
+        auto_push_tags: !options.no_push,
+        ..Default::default()
+    };
+    let git_manager = GitManager::with_config(temp_dir, git_config).await?;
+    
+    // Validate working directory is clean before making any modifications
+    use crate::error::GitError;
+    if !git_manager.is_clean().await? {
+        return Err(ReleaseError::Git(GitError::DirtyWorkingDirectory));
+    }
+    
     // ===== PHASE 1: VERSION BUMP =====
     config.println("🔢 Bumping version...");
     
@@ -678,21 +694,6 @@ pub(super) async fn perform_release_single_repo(
     
     // ===== PHASE 1.5: AUTOMATIC CLEANUP OF CONFLICTS =====
     config.println("🔍 Checking for conflicting artifacts...");
-    
-    // Create git_manager early for cleanup
-    let git_config = GitConfig {
-        default_remote: "origin".to_string(),
-        annotated_tags: true,
-        auto_push_tags: !options.no_push,
-        ..Default::default()
-    };
-    let git_manager = GitManager::with_config(temp_dir, git_config).await?;
-    
-    // Validate working directory is clean (can't proceed if dirty)
-    use crate::error::GitError;
-    if !git_manager.is_clean().await? {
-        return Err(ReleaseError::Git(GitError::DirtyWorkingDirectory));
-    }
     
     // Check and cleanup existing tag
     if git_manager.version_tag_exists(&new_version).await? {
