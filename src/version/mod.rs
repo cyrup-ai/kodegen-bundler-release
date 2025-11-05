@@ -10,10 +10,10 @@ mod toml_editor;
 mod updater;
 
 pub use bumper::{BumpPreview, VersionBump, VersionBumper};
-pub use toml_editor::{DependencyInfo, DependencySection, TomlBackup, TomlEditor};
+pub use toml_editor::{TomlBackup, TomlEditor};
 pub use updater::{
-    ConsistencyReport, DependencyUpdate, InconsistencyType, PackageUpdate, UpdateConfig,
-    UpdatePreview, UpdateResult, VersionChange, VersionInconsistency, VersionUpdater,
+    ConsistencyReport, UpdateConfig,
+    UpdatePreview, UpdateResult, VersionUpdater,
 };
 
 use crate::error::{Result, VersionError};

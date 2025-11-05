@@ -1,4 +1,6 @@
 //! Workspace version synchronization and update coordination.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module orchestrates atomic version updates across the entire workspace,
 //! ensuring internal dependencies are properly synchronized.

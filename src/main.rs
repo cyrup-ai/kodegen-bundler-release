@@ -14,7 +14,6 @@ mod state;
 mod version;
 mod workspace;
 
-use clap::Parser;
 use cli::OutputManager;
 use std::process;
 

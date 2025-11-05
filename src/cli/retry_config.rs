@@ -3,6 +3,8 @@
 //! Provides configurable retry limits for different operation types,
 //! allowing users to tune retry behavior based on network conditions.
 
+#![allow(dead_code)] // Public API - may be used by external consumers
+
 /// Configuration for retry behavior across different operation types
 #[derive(Debug, Clone)]
 pub struct RetryConfig {

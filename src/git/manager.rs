@@ -3,6 +3,8 @@
 //! This module provides high-level Git management for release workflows,
 //! coordinating commits, tags, pushes, and rollbacks.
 
+#![allow(dead_code)] // Public API - methods/structs may be used by external consumers
+
 use crate::error::{GitError, Result};
 use crate::git::{
     BranchInfo, CommitInfo, GitOperations, KodegenGitOperations, PushInfo, TagInfo,

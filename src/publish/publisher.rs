@@ -1,4 +1,6 @@
 //! Publishing orchestrator for workspace package publishing.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module coordinates the publishing of multiple packages in dependency order
 //! with proper timing, error handling, and rollback capabilities.

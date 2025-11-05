@@ -1,4 +1,6 @@
 //! Cargo publishing operations with retry logic and error handling.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module provides robust cargo publish operations with rate limiting,
 //! retry logic, and comprehensive error handling for crates.io publishing.

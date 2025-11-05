@@ -7,9 +7,7 @@ mod cargo_ops;
 mod publisher;
 
 pub use cargo_ops::{CargoPublisher, PublishConfig, PublishResult, YankResult};
-pub use publisher::{
-    PublishProgress, Publisher, PublisherConfig, PublishingResult, RollbackResult,
-};
+pub use publisher::{Publisher, PublisherConfig};
 
 use crate::error::Result;
 use crate::workspace::WorkspaceInfo;

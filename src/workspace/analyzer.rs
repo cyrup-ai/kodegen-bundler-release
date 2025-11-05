@@ -1,4 +1,6 @@
 //! Workspace structure analysis and package enumeration.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 
 use crate::error::{Result, WorkspaceError};
 use serde::{Deserialize, Serialize};

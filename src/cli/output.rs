@@ -2,6 +2,8 @@
 //!
 //! Provides consistent, colored CLI output with proper formatting
 
+#![allow(dead_code)] // Public API - methods may be used by external consumers
+
 use std::io::Write;
 use termcolor::{BufferWriter, Color, ColorChoice, ColorSpec, WriteColor};
 

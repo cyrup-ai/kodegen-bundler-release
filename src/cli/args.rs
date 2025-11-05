@@ -3,6 +3,8 @@
 //! This module provides comprehensive CLI argument parsing using clap,
 //! with proper validation and error handling.
 
+#![allow(dead_code)] // Public API - methods/fields may be used by external consumers
+
 use super::retry_config::RetryConfig;
 use crate::version::VersionBump;
 use clap::{Parser, ValueEnum};

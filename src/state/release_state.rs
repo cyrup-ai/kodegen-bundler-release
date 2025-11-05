@@ -1,4 +1,6 @@
 //! Release state tracking and serialization.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module provides comprehensive state tracking for release operations,
 //! enabling resume capabilities and rollback coordination.

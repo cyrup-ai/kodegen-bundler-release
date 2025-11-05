@@ -1,4 +1,6 @@
 //! Format-preserving TOML editing for Cargo.toml files.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module provides surgical editing of TOML files while preserving comments,
 //! formatting, and structure using the toml_edit crate.

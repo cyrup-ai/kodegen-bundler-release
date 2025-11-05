@@ -2,6 +2,8 @@
 //!
 //! This module defines all error types with actionable error messages and recovery suggestions.
 
+#![allow(dead_code)] // Error variants are defensive - better to have than not have
+
 use std::path::PathBuf;
 use thiserror::Error;
 

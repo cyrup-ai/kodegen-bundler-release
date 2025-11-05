@@ -8,7 +8,6 @@ mod dependency;
 mod validator;
 
 pub use analyzer::{
-    DependencySpec, PackageConfig, PackageInfo, SharedWorkspaceInfo, WorkspaceConfig, WorkspaceInfo,
+    PackageInfo, SharedWorkspaceInfo, WorkspaceInfo,
 };
-pub use dependency::{DependencyGraph, PublishOrder, PublishTier};
-pub use validator::{ValidationCheck, ValidationResult, WorkspaceValidator};
+pub use dependency::{DependencyGraph, PublishTier};

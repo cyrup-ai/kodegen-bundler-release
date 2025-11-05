@@ -101,6 +101,19 @@ sha2 = "0.10"
 # Terminal colors
 cyrup_termcolor = "2"
 
+# Regular expressions (source parsing, publish retry logic)
+regex = "1"
+
+# Glob pattern matching (workspace analysis)
+glob = "0.3"
+
+# Cross-platform directories (.zshrc sourcing, temp clone tracking)
+dirs = "6"
+
+[target.'cfg(unix)'.dependencies]
+# Advisory file locking (state management on Unix)
+nix = { version = "0.30", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = "3"
 assert_cmd = "2"

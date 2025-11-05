@@ -1,4 +1,6 @@
 //! Version bumping logic using semantic versioning.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module provides type-safe version bump operations with proper semver compliance.
 

@@ -2,7 +2,6 @@
 
 use crate::error::{CliError, ReleaseError, Result};
 use crate::git::GitManager;
-use std::path::Path;
 
 /// Parse GitHub repository string into owner/repo tuple
 #[allow(dead_code)]

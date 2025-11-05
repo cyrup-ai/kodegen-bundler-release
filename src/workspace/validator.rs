@@ -1,4 +1,6 @@
 //! Workspace validation for pre-release checks.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module performs comprehensive validation to ensure the workspace is ready
 //! for release operations, preventing failures during the release process.

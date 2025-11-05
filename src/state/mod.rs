@@ -7,12 +7,10 @@ mod manager;
 mod release_state;
 
 pub use manager::{
-    FileInfo, LoadStateResult, SaveStateResult, StateConfig, StateFileInfo, StateManager,
+    LoadStateResult, SaveStateResult, StateConfig, StateManager,
 };
 pub use release_state::{
-    FileBackup, GitCommitInfo, GitPushInfo, GitState, GitTagInfo, PublishPackageInfo, PublishState,
-    ReleaseCheckpoint, ReleaseConfig, ReleaseError, ReleasePhase, ReleaseState,
-    STATE_FORMAT_VERSION, VersionState, VersionUpdateInfo,
+    ReleaseConfig, ReleasePhase, ReleaseState,
 };
 
 use crate::error::Result;

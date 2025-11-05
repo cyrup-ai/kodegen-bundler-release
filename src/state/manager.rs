@@ -1,4 +1,6 @@
 //! State persistence and management for release operations.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module provides robust state persistence with file locking,
 //! corruption recovery, and atomic operations.

@@ -1,4 +1,6 @@
 //! Dependency graph analysis and topological sorting for package publishing.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module builds dependency graphs from workspace information and determines
 //! the optimal publishing order to ensure dependencies are available before dependents.

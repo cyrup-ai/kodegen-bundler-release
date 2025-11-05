@@ -1,4 +1,6 @@
 //! Core Git operations trait and types for release management.
+#![allow(dead_code)] // Public API - items may be used by external consumers
+
 //!
 //! This module defines the GitOperations trait that specifies all Git operations
 //! needed for release workflows. The actual implementation is provided by the
