@@ -21,10 +21,6 @@ license = "Apache-2.0 OR MIT"
 name = "kodegen_bundler_release"
 path = "src/main.rs"
 
-[lib]
-name = "kodegen_bundler_release"
-path = "src/lib.rs"
-
 [dependencies]
 # Bundler for creating platform packages
 kodegen_bundler_bundle = { path = "../kodegen-bundler-bundle" }
