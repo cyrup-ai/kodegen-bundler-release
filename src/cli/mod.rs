@@ -5,7 +5,6 @@
 
 mod args;
 pub mod commands;
-mod docker;
 mod output;
 mod retry_config;
 

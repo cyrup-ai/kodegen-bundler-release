@@ -3,8 +3,19 @@
 //! This binary provides atomic release operations with proper error handling,
 //! automatic internal dependency version synchronization, and rollback capabilities.
 
-use kodegen_bundler_release::cli;
-use kodegen_bundler_release::cli::OutputManager;
+mod cli;
+mod error;
+mod git;
+mod github;
+mod metadata;
+mod publish;
+mod source;
+mod state;
+mod version;
+mod workspace;
+
+use clap::Parser;
+use cli::OutputManager;
 use std::process;
 
 fn main() {

@@ -8,7 +8,7 @@ use crate::error::{CliError, PublishError, ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
 use crate::state::ReleaseState;
 
-use super::super::helpers::{create_bundles, detect_github_repo, parse_github_repo_string};
+use super::super::helpers::{detect_github_repo, parse_github_repo_string};
 use super::ReleaseOptions;
 
 /// Context for executing release phases with all required dependencies
