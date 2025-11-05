@@ -434,6 +434,54 @@ impl GitManager {
         self.repository.tag_exists(&tag_name).await
     }
 
+    /// Check if a release branch already exists (local)
+    pub async fn release_branch_exists(&self, version: &Version) -> Result<bool> {
+        let branch_name = format!("v{}", version);
+        self.repository.branch_exists(&branch_name).await
+    }
+
+    /// Check if a release branch exists on remote
+    pub async fn remote_release_branch_exists(&self, version: &Version) -> Result<bool> {
+        let branch_name = format!("v{}", version);
+        self.repository.remote_branch_exists("origin", &branch_name).await
+    }
+
+    /// Clean up existing tag (both local and remote)
+    ///
+    /// Deletes the tag locally and from the remote if it exists.
+    /// Safe to call even if tag doesn't exist - will silently succeed.
+    pub async fn cleanup_existing_tag(&self, version: &Version) -> Result<()> {
+        let tag_name = format!("v{}", version);
+        
+        // Check if tag exists locally
+        if self.repository.tag_exists(&tag_name).await? {
+            // Delete with delete_remote=true to cleanup both local and remote
+            self.repository.delete_tag(&tag_name, true).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Clean up existing release branch (both local and remote)
+    ///
+    /// Deletes the branch locally and from the remote if it exists.
+    /// Safe to call even if branch doesn't exist - will silently succeed.
+    pub async fn cleanup_existing_branch(&self, version: &Version) -> Result<()> {
+        let branch_name = format!("v{}", version);
+        
+        // Delete remote branch first (if exists)
+        if self.repository.remote_branch_exists("origin", &branch_name).await? {
+            self.repository.delete_remote_branch("origin", &branch_name).await?;
+        }
+        
+        // Delete local branch (if exists)
+        if self.repository.branch_exists(&branch_name).await? {
+            self.repository.delete_branch(&branch_name, false).await?;
+        }
+        
+        Ok(())
+    }
+
     /// Get remote information
     pub async fn remotes(&self) -> Result<Vec<crate::git::RemoteInfo>> {
         self.repository.get_remotes().await

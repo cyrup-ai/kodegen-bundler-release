@@ -53,6 +53,18 @@ pub trait GitOperations {
     /// Check if tag exists
     fn tag_exists(&self, tag_name: &str) -> impl Future<Output = Result<bool>>;
 
+    /// Check if local branch exists
+    fn branch_exists(&self, branch_name: &str) -> impl Future<Output = Result<bool>>;
+
+    /// Check if remote branch exists
+    fn remote_branch_exists(&self, remote: &str, branch_name: &str) -> impl Future<Output = Result<bool>>;
+
+    /// Delete a local branch
+    fn delete_branch(&self, branch_name: &str, force: bool) -> impl Future<Output = Result<()>>;
+
+    /// Delete a remote branch
+    fn delete_remote_branch(&self, remote: &str, branch_name: &str) -> impl Future<Output = Result<()>>;
+
     /// Get remote information
     fn get_remotes(&self) -> impl Future<Output = Result<Vec<RemoteInfo>>>;
 

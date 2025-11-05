@@ -395,6 +395,44 @@ impl GitOperations for KodegenGitOperations {
         })?)
     }
 
+    async fn branch_exists(&self, branch_name: &str) -> Result<bool> {
+        let branches = git::list_branches(self.repo.clone())
+            .await?
+            .map_err(|_| GitError::BranchOperationFailed {
+                reason: "Failed to list branches".to_string(),
+            })?;
+        Ok(branches.contains(&branch_name.to_string()))
+    }
+
+    async fn remote_branch_exists(&self, remote: &str, branch_name: &str) -> Result<bool> {
+        // Use kodegen-tools-git's check_remote_branch_exists
+        Ok(git::check_remote_branch_exists(&self.repo, remote, branch_name)
+            .await
+            .map_err(|_| GitError::RemoteOperationFailed {
+                operation: "check remote branch".to_string(),
+                reason: "Channel error".to_string(),
+            })?)
+    }
+
+    async fn delete_branch(&self, branch_name: &str, force: bool) -> Result<()> {
+        git::delete_branch(self.repo.clone(), branch_name.to_string(), force)
+            .await
+            .map_err(|_| GitError::BranchOperationFailed {
+                reason: format!("Failed to delete branch '{}'", branch_name),
+            })?;
+        Ok(())
+    }
+
+    async fn delete_remote_branch(&self, remote: &str, branch_name: &str) -> Result<()> {
+        git::delete_remote_branch(&self.repo, remote, branch_name)
+            .await
+            .map_err(|_| GitError::RemoteOperationFailed {
+                operation: "delete remote branch".to_string(),
+                reason: format!("Failed to delete branch '{}' from remote '{}'", branch_name, remote),
+            })?;
+        Ok(())
+    }
+
     async fn get_remotes(&self) -> Result<Vec<RemoteInfo>> {
         let remotes =
             git::list_remotes(&self.repo)

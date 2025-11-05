@@ -44,9 +44,10 @@ pub(super) async fn perform_release_single_repo(
     crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
     config.success_println("✓ Updated Cargo.toml");
     
-    // ===== PHASE 2: GIT OPERATIONS =====
-    config.println("📝 Creating git commit...");
+    // ===== PHASE 1.5: AUTOMATIC CLEANUP OF CONFLICTS =====
+    config.println("🔍 Checking for conflicting artifacts...");
     
+    // Create git_manager early for cleanup
     let git_config = GitConfig {
         default_remote: "origin".to_string(),
         annotated_tags: true,
@@ -55,6 +56,60 @@ pub(super) async fn perform_release_single_repo(
     };
     let mut git_manager = GitManager::with_config(temp_dir, git_config).await?;
     
+    // Validate working directory is clean (can't proceed if dirty)
+    use crate::error::GitError;
+    if !git_manager.is_clean().await? {
+        return Err(ReleaseError::Git(GitError::DirtyWorkingDirectory));
+    }
+    
+    // Check and cleanup existing tag
+    if git_manager.version_tag_exists(&new_version).await? {
+        config.println(&format!("⚠️  Tag v{} already exists - cleaning up...", new_version));
+        git_manager.cleanup_existing_tag(&new_version).await?;
+        config.success_println("✓ Cleaned up existing tag");
+    }
+    
+    // Check and cleanup existing branch (local or remote)
+    let has_local_branch = git_manager.release_branch_exists(&new_version).await?;
+    let has_remote_branch = git_manager.remote_release_branch_exists(&new_version).await?;
+    
+    if has_local_branch || has_remote_branch {
+        config.println(&format!("⚠️  Branch v{} already exists - cleaning up...", new_version));
+        git_manager.cleanup_existing_branch(&new_version).await?;
+        config.success_println("✓ Cleaned up existing branch");
+    }
+    
+    // Detect GitHub repo early for cleanup
+    let (owner, repo) = if let Some(repo_str) = &options.github_repo {
+        parse_github_repo_string(repo_str)?
+    } else {
+        detect_github_repo(&git_manager).await?
+    };
+    
+    // Create github_manager early for cleanup
+    let github_config = crate::github::GitHubReleaseConfig {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        draft: true,
+        prerelease_for_zero_versions: true,
+        notes: None,
+        token: None, // From GH_TOKEN or GITHUB_TOKEN environment variable
+    };
+    let github_manager = crate::github::GitHubReleaseManager::new(github_config)?;
+    
+    // Check and cleanup existing GitHub release
+    if github_manager.release_exists(&new_version).await? {
+        config.println(&format!("⚠️  GitHub release v{} already exists - cleaning up...", new_version));
+        github_manager.cleanup_existing_release(&new_version).await?;
+        config.success_println("✓ Cleaned up existing GitHub release");
+    }
+    
+    config.success_println("✓ All conflicts resolved - ready to release");
+    
+    // ===== PHASE 2: GIT OPERATIONS =====
+    config.println("📝 Creating git commit...");
+    
+    // git_manager already created in Phase 1.5 - just use it
     let git_result = git_manager.perform_release(&new_version, !options.no_push).await?;
     
     config.success_println(&format!("✓ Committed: \"{}\"", git_result.commit.message));
@@ -66,23 +121,7 @@ pub(super) async fn perform_release_single_repo(
     // ===== PHASE 3: CREATE GITHUB DRAFT RELEASE =====
     config.println("🚀 Creating GitHub draft release...");
     
-    let (owner, repo) = if let Some(repo_str) = &options.github_repo {
-        parse_github_repo_string(repo_str)?
-    } else {
-        detect_github_repo(&git_manager).await?
-    };
-    
-    let github_config = crate::github::GitHubReleaseConfig {
-        owner: owner.clone(),
-        repo: repo.clone(),
-        draft: true,  // ALWAYS start as draft
-        prerelease_for_zero_versions: true,
-        notes: None,  // Auto-generate
-        token: None,  // From GH_TOKEN or GITHUB_TOKEN env
-    };
-    
-    let github_manager = crate::github::GitHubReleaseManager::new(github_config)?;
-    
+    // github_manager already created in Phase 1.5 - just use it
     let release_result = github_manager.create_release(
         &new_version,
         &git_result.commit.hash,

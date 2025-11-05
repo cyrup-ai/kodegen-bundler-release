@@ -199,6 +199,13 @@ pub enum GitError {
         tag: String,
     },
 
+    /// Branch already exists (local or remote)
+    #[error("Git branch '{branch}' already exists. Delete it first or use a different version.")]
+    BranchExists {
+        /// Branch name
+        branch: String,
+    },
+
     /// Branch operation failed
     #[error("Git branch operation failed: {reason}")]
     BranchOperationFailed {

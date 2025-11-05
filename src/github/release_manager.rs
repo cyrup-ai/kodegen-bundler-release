@@ -162,6 +162,64 @@ impl GitHubReleaseManager {
         })
     }
 
+    /// Check if a release already exists for this version
+    ///
+    /// Uses the GitHub API to check if a release exists with tag v{version}.
+    ///
+    /// # Returns
+    /// - `Ok(true)` - Release exists
+    /// - `Ok(false)` - Release does not exist  
+    /// - `Err(_)` - Network or authentication error
+    pub async fn release_exists(&self, version: &Version) -> Result<bool> {
+        let tag_name = format!("v{}", version);
+        
+        match kodegen_tools_github::get_release_by_tag(
+            self.client.inner().clone(),
+            &self.config.owner,
+            &self.config.repo,
+            &tag_name,
+        )
+        .await
+        {
+            Ok(Some(_)) => Ok(true),  // Release exists
+            Ok(None) => Ok(false), // Doesn't exist
+            Err(e) => Err(ReleaseError::GitHub(e.to_string())), // Network/auth error
+        }
+    }
+
+    /// Clean up existing GitHub release for this version
+    ///
+    /// Finds and deletes the GitHub release with tag v{version} if it exists.
+    /// Safe to call even if release doesn't exist - will silently succeed.
+    ///
+    /// # Returns
+    /// - `Ok(())` - Release deleted or didn't exist
+    /// - `Err(_)` - Network or authentication error
+    pub async fn cleanup_existing_release(&self, version: &Version) -> Result<()> {
+        let tag_name = format!("v{}", version);
+        
+        // Get release by tag to find the release_id
+        match kodegen_tools_github::get_release_by_tag(
+            self.client.inner().clone(),
+            &self.config.owner,
+            &self.config.repo,
+            &tag_name,
+        )
+        .await
+        {
+            Ok(Some(release)) => {
+                // Release exists - delete it
+                self.delete_release(release.id.0).await?;
+                Ok(())
+            }
+            Ok(None) => {
+                // Release doesn't exist - nothing to cleanup
+                Ok(())
+            }
+            Err(e) => Err(ReleaseError::GitHub(e.to_string())),
+        }
+    }
+
     /// Publish a draft release (remove draft status)
     ///
     /// Converts a draft release to a published release by setting draft=false.
