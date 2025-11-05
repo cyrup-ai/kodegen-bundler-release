@@ -11,6 +11,30 @@ use crate::state::ReleaseState;
 use super::super::helpers::{create_bundles, detect_github_repo, parse_github_repo_string};
 use super::ReleaseOptions;
 
+/// Context for executing release phases with all required dependencies
+struct ReleasePhaseContext<'a> {
+    /// Temporary directory for isolated execution
+    temp_dir: &'a std::path::Path,
+    /// Package metadata from Cargo.toml
+    metadata: &'a crate::metadata::PackageMetadata,
+    /// Binary name to build and release
+    binary_name: &'a str,
+    /// Target version for this release
+    new_version: &'a semver::Version,
+    /// Runtime configuration for output and settings
+    config: &'a RuntimeConfig,
+    /// Release-specific options (bump type, push behavior, etc.)
+    options: &'a ReleaseOptions,
+    /// Git manager for version control operations
+    git_manager: &'a GitManager,
+    /// GitHub manager for release and artifact management
+    github_manager: &'a crate::github::GitHubReleaseManager,
+    /// GitHub repository owner
+    owner: &'a str,
+    /// GitHub repository name
+    repo: &'a str,
+}
+
 /// Maximum backoff time in seconds (1 hour)
 /// Prevents exponential backoff from producing impractical wait times
 const MAX_BACKOFF_SECONDS: u64 = 3600;
@@ -114,44 +138,35 @@ where
 /// This function handles all phases that involve network operations and may need retry logic.
 /// Phase 1 (version bump) and Phase 1.5 (conflict cleanup) are handled separately.
 async fn execute_phases_with_retry(
-    temp_dir: &std::path::Path,
-    metadata: &crate::metadata::PackageMetadata,
-    binary_name: &str,
-    new_version: &semver::Version,
-    config: &RuntimeConfig,
-    options: &ReleaseOptions,
-    git_manager: &GitManager,
-    github_manager: &crate::github::GitHubReleaseManager,
+    ctx: &ReleasePhaseContext<'_>,
     release_state: &mut ReleaseState,
-    owner: &str,
-    repo: &str,
 ) -> Result<()> {
     // ===== PHASE 2: GIT OPERATIONS (with retry) =====
     let git_result: Option<crate::git::ReleaseResult> = if release_state.has_completed(crate::state::ReleasePhase::GitOperations) {
-        config.println("✓ Skipping git operations (already completed)");
+        ctx.config.println("✓ Skipping git operations (already completed)");
         if let Some(ref git_state) = release_state.git_state {
             if let Some(ref commit) = git_state.release_commit {
-                config.indent(&format!("   Commit: {}", commit.short_hash));
+                ctx.config.indent(&format!("   Commit: {}", commit.short_hash));
             }
             if let Some(ref tag) = git_state.release_tag {
-                config.indent(&format!("   Tag: {}", tag.name));
+                ctx.config.indent(&format!("   Tag: {}", tag.name));
             }
         }
         None
     } else {
-        config.println("📝 Creating git commit...");
+        ctx.config.println("📝 Creating git commit...");
         
         let result = retry_with_backoff(
-            || git_manager.perform_release(new_version, !options.no_push),
-            config.retry_config.git_operations,
+            || ctx.git_manager.perform_release(ctx.new_version, !ctx.options.no_push),
+            ctx.config.retry_config.git_operations,
             "Git operations",
-            config,
+            ctx.config,
         ).await?;
         
-        config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
-        config.success_println(&format!("✓ Tagged: {}", result.tag.name));
-        if !options.no_push {
-            config.success_println("✓ Pushed to origin");
+        ctx.config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
+        ctx.config.success_println(&format!("✓ Tagged: {}", result.tag.name));
+        if !ctx.options.no_push {
+            ctx.config.success_println("✓ Pushed to origin");
         }
         
         // Save state after git operations complete
@@ -163,28 +178,28 @@ async fn execute_phases_with_retry(
             true,  // rollback_capable
         );
         crate::state::save_release_state(release_state).await?;
-        config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)");
         
         Some(result)
     };
     
     // ===== PHASE 3 PRECHECK: VERIFY GITHUB API ACCESS =====
-    config.println("🔍 Verifying GitHub API access...");
+    ctx.config.println("🔍 Verifying GitHub API access...");
 
-    if !github_manager.test_connection().await? {
+    if !ctx.github_manager.test_connection().await? {
         return Err(ReleaseError::Cli(CliError::InvalidArguments {
             reason: "GitHub API authentication failed. Check GH_TOKEN or GITHUB_TOKEN environment variable.".to_string(),
         }));
     }
 
-    config.success_println("✓ GitHub API authenticated");
-    config.println("");
+    ctx.config.success_println("✓ GitHub API authenticated");
+    ctx.config.println("");
 
     // ===== PHASE 3: CREATE GITHUB DRAFT RELEASE (with retry) =====
     let release_id = if release_state.has_completed(crate::state::ReleasePhase::GitHubRelease) {
-        config.println("✓ Skipping GitHub release creation (already completed)");
+        ctx.config.println("✓ Skipping GitHub release creation (already completed)");
         if let Some(ref github_state) = release_state.github_state {
-            config.indent(&format!("   Release: {}", github_state.html_url.as_ref().unwrap_or(&"N/A".to_string())));
+            ctx.config.indent(&format!("   Release: {}", github_state.html_url.as_ref().unwrap_or(&"N/A".to_string())));
             github_state.release_id.ok_or_else(|| {
                 ReleaseError::State(crate::error::StateError::Corrupted {
                     reason: "GitHubRelease checkpoint exists but release_id is None".to_string(),
@@ -196,7 +211,7 @@ async fn execute_phases_with_retry(
             }));
         }
     } else {
-        config.println("🚀 Creating GitHub draft release...");
+        ctx.config.println("🚀 Creating GitHub draft release...");
         
         // Get commit hash from git_result or from stored state
         let commit_hash = if let Some(ref result) = git_result {
@@ -214,20 +229,20 @@ async fn execute_phases_with_retry(
         };
         
         let release_result = retry_with_backoff(
-            || github_manager.create_release(
-                new_version,
+            || ctx.github_manager.create_release(
+                ctx.new_version,
                 &commit_hash,
                 None,
             ),
-            config.retry_config.github_api,
+            ctx.config.retry_config.github_api,
             "GitHub release creation",
-            config,
+            ctx.config,
         ).await?;
         
-        config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
+        ctx.config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
         
         // Track release in state for potential cleanup
-        release_state.set_github_state(owner.to_string(), repo.to_string(), Some(&release_result));
+        release_state.set_github_state(ctx.owner.to_string(), ctx.repo.to_string(), Some(&release_result));
         let release_id = release_result.release_id;
         
         // Save state after GitHub release created
@@ -242,13 +257,13 @@ async fn execute_phases_with_retry(
             true,  // rollback_capable
         );
         crate::state::save_release_state(release_state).await?;
-        config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)");
         
         release_id
     };
     
     // ===== PHASE 4 PRECHECK: VERIFY BUILD TOOLS =====
-    config.println("🔍 Checking build tools...");
+    ctx.config.println("🔍 Checking build tools...");
 
     if !super::super::helpers::check_cargo_available() {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
@@ -264,41 +279,41 @@ async fn execute_phases_with_retry(
         }));
     }
 
-    config.success_println("✓ Build tools available");
-    config.println("");
+    ctx.config.success_println("✓ Build tools available");
+    ctx.config.println("");
 
     // ===== PHASE 4: BUILD BINARY (no retry - build errors are deterministic) =====
-    if options.universal && cfg!(target_os = "macos") {
-        config.println(&format!("🔨 Building universal binary '{}' (x86_64 + arm64)...", binary_name));
+    if ctx.options.universal && cfg!(target_os = "macos") {
+        ctx.config.println(&format!("🔨 Building universal binary '{}' (x86_64 + arm64)...", ctx.binary_name));
         
         // Build for Intel (x86_64)
-        config.verbose_println("  Building for x86_64 (Intel)...");
+        ctx.config.verbose_println("  Building for x86_64 (Intel)...");
         super::super::helpers::build_for_target(
-            temp_dir, 
-            binary_name, 
+            ctx.temp_dir, 
+            ctx.binary_name, 
             "x86_64-apple-darwin", 
-            config
+            ctx.config
         )?;
         
         // Build for Apple Silicon (arm64)
-        config.verbose_println("  Building for aarch64 (Apple Silicon)...");
+        ctx.config.verbose_println("  Building for aarch64 (Apple Silicon)...");
         super::super::helpers::build_for_target(
-            temp_dir, 
-            binary_name, 
+            ctx.temp_dir, 
+            ctx.binary_name, 
             "aarch64-apple-darwin", 
-            config
+            ctx.config
         )?;
         
         // Create universal binaries using lipo
-        config.verbose_println("  Merging architectures with lipo...");
-        let output_dir = temp_dir.join("target/universal/release");
+        ctx.config.verbose_println("  Merging architectures with lipo...");
+        let output_dir = ctx.temp_dir.join("target/universal/release");
         let universal_binaries = crate::bundler::platform::macos::universal::create_universal_binaries(
-            temp_dir,
+            ctx.temp_dir,
             &output_dir,
         )?;
         
         // Copy universal binary to target/release for bundler pickup
-        let release_dir = temp_dir.join("target/release");
+        let release_dir = ctx.temp_dir.join("target/release");
         std::fs::create_dir_all(&release_dir).map_err(|e| {
             ReleaseError::Cli(CliError::ExecutionFailed {
                 command: "create_release_dir".to_string(),
@@ -315,42 +330,42 @@ async fn execute_phases_with_retry(
                         reason: format!("Failed to copy {} to release dir: {}", filename.to_string_lossy(), e),
                     })
                 })?;
-                config.verbose_println(&format!("  Copied {} to target/release/", filename.to_string_lossy()));
+                ctx.config.verbose_println(&format!("  Copied {} to target/release/", filename.to_string_lossy()));
             }
         }
         
-        config.success_println("✓ Universal binary created (supports Intel + Apple Silicon)");
-    } else if options.universal && !cfg!(target_os = "macos") {
-        config.warning_println("⚠️  --universal flag ignored (only supported on macOS)");
-        config.println(&format!("🔨 Building binary '{}'...", binary_name));
-        super::super::helpers::build_binary(temp_dir, binary_name, true, config)?;
-        config.success_println("✓ Build complete");
+        ctx.config.success_println("✓ Universal binary created (supports Intel + Apple Silicon)");
+    } else if ctx.options.universal && !cfg!(target_os = "macos") {
+        ctx.config.warning_println("⚠️  --universal flag ignored (only supported on macOS)");
+        ctx.config.println(&format!("🔨 Building binary '{}'...", ctx.binary_name));
+        super::super::helpers::build_binary(ctx.temp_dir, ctx.binary_name, true, ctx.config)?;
+        ctx.config.success_println("✓ Build complete");
     } else {
-        config.println(&format!("🔨 Building binary '{}'...", binary_name));
-        super::super::helpers::build_binary(temp_dir, binary_name, true, config)?;
-        config.success_println("✓ Build complete");
+        ctx.config.println(&format!("🔨 Building binary '{}'...", ctx.binary_name));
+        super::super::helpers::build_binary(ctx.temp_dir, ctx.binary_name, true, ctx.config)?;
+        ctx.config.success_println("✓ Build complete");
     }
     
     // ===== PHASE 5: CREATE PLATFORM PACKAGES (no retry - local operation) =====
-    config.println("📦 Creating platform installers...");
+    ctx.config.println("📦 Creating platform installers...");
     
     let bundled_artifacts = create_bundles(
-        temp_dir,
-        metadata,
-        binary_name,
-        new_version,
-        config,
+        ctx.temp_dir,
+        ctx.metadata,
+        ctx.binary_name,
+        ctx.new_version,
+        ctx.config,
     ).await?;
     
-    config.success_println(&format!("✓ Created {} platform package(s)", bundled_artifacts.len()));
+    ctx.config.success_println(&format!("✓ Created {} platform package(s)", bundled_artifacts.len()));
     
     // ===== PHASE 6: UPLOAD PACKAGES (with retry per file) =====
     if release_state.has_completed(crate::state::ReleasePhase::GitHubRelease) 
         && release_state.checkpoints.iter().any(|cp| cp.name == "artifacts_uploaded") {
-        config.println("✓ Skipping artifact upload (already completed)");
+        ctx.config.println("✓ Skipping artifact upload (already completed)");
     } else {
-        config.println("📤 Uploading packages to GitHub...");
-        config.println("");
+        ctx.config.println("📤 Uploading packages to GitHub...");
+        ctx.config.println("");
         
         let mut upload_count = 0;
         for artifact in &bundled_artifacts {
@@ -365,33 +380,33 @@ async fn execute_phases_with_retry(
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
                 
-                config.indent(&format!("Uploading {}...", filename));
+                ctx.config.indent(&format!("Uploading {}...", filename));
                 
                 // Upload with retry
                 let download_urls = retry_with_backoff(
-                    || github_manager.upload_artifacts(
+                    || ctx.github_manager.upload_artifacts(
                         release_id,
                         std::slice::from_ref(artifact_path),
-                        new_version,
-                        config,
+                        ctx.new_version,
+                        ctx.config,
                     ),
-                    config.retry_config.file_uploads,
+                    ctx.config.retry_config.file_uploads,
                     &format!("Upload {}", filename),
-                    config,
+                    ctx.config,
                 ).await?;
                 
-                config.indent(&format!("✓ Uploaded {}", filename));
+                ctx.config.indent(&format!("✓ Uploaded {}", filename));
                 
                 // Display each download URL
                 for url in &download_urls {
-                    config.indent(&format!("   📥 {}", url));
+                    ctx.config.indent(&format!("   📥 {}", url));
                 }
                 
                 upload_count += 1;
             }
         }
         
-        config.success_println(&format!("✓ Uploaded {} artifact(s)", upload_count));
+        ctx.config.success_println(&format!("✓ Uploaded {} artifact(s)", upload_count));
         
         // Save state after all uploads complete
         release_state.set_phase(crate::state::ReleasePhase::GitHubRelease);  // Still in release phase
@@ -404,16 +419,16 @@ async fn execute_phases_with_retry(
             false,  // Not rollback-capable (can't delete uploaded files easily)
         );
         crate::state::save_release_state(release_state).await?;
-        config.verbose_println("ℹ️  Saved progress checkpoint (Artifacts uploaded)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Artifacts uploaded)");
     }
     
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
     if release_state.has_completed(crate::state::ReleasePhase::GitHubPublish) {
-        config.println("✓ Skipping release publishing (already published)");
+        ctx.config.println("✓ Skipping release publishing (already published)");
     } else {
-        config.println("🔍 Verifying release is ready to publish...");
+        ctx.config.println("🔍 Verifying release is ready to publish...");
 
-        if !github_manager.verify_release_is_draft(release_id).await? {
+        if !ctx.github_manager.verify_release_is_draft(release_id).await? {
             return Err(ReleaseError::Cli(CliError::ExecutionFailed {
                 command: "publish_release".to_string(),
                 reason: format!(
@@ -423,19 +438,19 @@ async fn execute_phases_with_retry(
             }));
         }
 
-        config.success_println("✓ Release verified as draft");
-        config.println("");
+        ctx.config.success_println("✓ Release verified as draft");
+        ctx.config.println("");
 
-        config.println("✅ Publishing GitHub release...");
+        ctx.config.println("✅ Publishing GitHub release...");
         
         retry_with_backoff(
-            || github_manager.publish_draft_release(release_id),
-            config.retry_config.release_publishing,
+            || ctx.github_manager.publish_draft_release(release_id),
+            ctx.config.retry_config.release_publishing,
             "Publish GitHub release",
-            config,
+            ctx.config,
         ).await?;
         
-        config.success_println(&format!("✓ Published release v{}", new_version));
+        ctx.config.success_println(&format!("✓ Published release v{}", ctx.new_version));
         
         // Save state after publishing
         release_state.set_phase(crate::state::ReleasePhase::GitHubPublish);
@@ -446,12 +461,12 @@ async fn execute_phases_with_retry(
             false,  // Can't unpublish
         );
         crate::state::save_release_state(release_state).await?;
-        config.verbose_println("ℹ️  Saved progress checkpoint (Release published)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Release published)");
     }
     
     // ===== PHASE 8: PUBLISH TO CRATES.IO (with retry) =====
-    if let Some(registry) = &options.registry {
-        config.println(&format!("📦 Publishing to {}...", registry));
+    if let Some(registry) = &ctx.options.registry {
+        ctx.config.println(&format!("📦 Publishing to {}...", registry));
         
         let publish_result = retry_with_backoff(
             || async {
@@ -459,7 +474,7 @@ async fn execute_phases_with_retry(
                     .arg("publish")
                     .arg("--registry")
                     .arg(registry)
-                    .current_dir(temp_dir)
+                    .current_dir(ctx.temp_dir)
                     .output()
                     .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
                         command: "cargo_publish".to_string(),
@@ -471,33 +486,33 @@ async fn execute_phases_with_retry(
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     Err(ReleaseError::Publish(PublishError::PublishFailed {
-                        package: metadata.name.clone(),
+                        package: ctx.metadata.name.clone(),
                         reason: stderr.to_string(),
                     }))
                 }
             },
-            config.retry_config.release_publishing,
+            ctx.config.retry_config.release_publishing,
             &format!("Publish to {}", registry),
-            config,
+            ctx.config,
         ).await;
         
         match publish_result {
             Ok(()) => {
-                config.success_println(&format!("✓ Published {} v{} to {}", metadata.name, new_version, registry));
+                ctx.config.success_println(&format!("✓ Published {} v{} to {}", ctx.metadata.name, ctx.new_version, registry));
             }
             Err(e) => {
-                config.warning_println(&format!("⚠️  Publishing failed: {}", e));
+                ctx.config.warning_println(&format!("⚠️  Publishing failed: {}", e));
                 // Continue anyway - GitHub release is already published
             }
         }
     } else {
-        config.println("📦 Publishing to crates.io...");
+        ctx.config.println("📦 Publishing to crates.io...");
         
         let publish_result = retry_with_backoff(
             || async {
                 let output = std::process::Command::new("cargo")
                     .arg("publish")
-                    .current_dir(temp_dir)
+                    .current_dir(ctx.temp_dir)
                     .output()
                     .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
                         command: "cargo_publish".to_string(),
@@ -509,22 +524,22 @@ async fn execute_phases_with_retry(
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     Err(ReleaseError::Publish(PublishError::PublishFailed {
-                        package: metadata.name.clone(),
+                        package: ctx.metadata.name.clone(),
                         reason: stderr.to_string(),
                     }))
                 }
             },
-            config.retry_config.release_publishing,
+            ctx.config.retry_config.release_publishing,
             "Publish to crates.io",
-            config,
+            ctx.config,
         ).await;
         
         match publish_result {
             Ok(()) => {
-                config.success_println(&format!("✓ Published {} v{} to crates.io", metadata.name, new_version));
+                ctx.config.success_println(&format!("✓ Published {} v{} to crates.io", ctx.metadata.name, ctx.new_version));
             }
             Err(_) => {
-                config.verbose_println("ℹ️  Skipping crates.io publish (may not be a library crate)");
+                ctx.config.verbose_println("ℹ️  Skipping crates.io publish (may not be a library crate)");
             }
         }
     }
@@ -724,19 +739,22 @@ pub(super) async fn perform_release_single_repo(
     config.success_println("✓ All conflicts resolved - ready to release");
     
     // ===== EXECUTE PHASES 2-8 WITH RETRY AND SELECTIVE CLEANUP =====
-    let result = execute_phases_with_retry(
+    // Create context for phase execution
+    let phase_ctx = ReleasePhaseContext {
         temp_dir,
-        &metadata,
-        &binary_name,
-        &new_version,
+        metadata: &metadata,
+        binary_name: &binary_name,
+        new_version: &new_version,
         config,
         options,
-        &git_manager,
-        &github_manager,
-        &mut release_state,
-        &owner,
-        &repo,
-    ).await;
+        git_manager: &git_manager,
+        github_manager: &github_manager,
+        owner: &owner,
+        repo: &repo,
+    };
+    
+    // Execute phases with context
+    let result = execute_phases_with_retry(&phase_ctx, &mut release_state).await;
     
     match result {
         Ok(()) => {
