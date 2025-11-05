@@ -250,6 +250,77 @@ impl GitHubReleaseManager {
         Ok(())
     }
 
+    /// Test GitHub API connection and authentication
+    ///
+    /// Calls /user endpoint to verify the token is valid before attempting
+    /// expensive operations like creating releases or uploading artifacts.
+    ///
+    /// This is a PRECHECK - called before Phase 3 to fail fast if authentication
+    /// is broken. Prevents wasting time on git operations when GitHub access will fail.
+    ///
+    /// # Returns
+    /// - `Ok(true)` - API connection successful, token is valid
+    /// - `Ok(false)` - API connection failed (invalid token, network error, or rate limit)
+    pub async fn test_connection(&self) -> Result<bool> {
+        match self.client.get_me().await {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Verify a commit exists in the repository
+    ///
+    /// Calls repos/:owner/:repo/commits/:sha endpoint to verify the commit
+    /// has been pushed to GitHub before creating a release pointing to it.
+    ///
+    /// This prevents creating releases with invalid target_commitish values.
+    ///
+    /// # Arguments
+    /// * `commit_sha` - Full commit SHA (40 characters)
+    ///
+    /// # Returns
+    /// - `Ok(true)` - Commit exists on GitHub
+    /// - `Ok(false)` - Commit not found or network error
+    pub async fn verify_commit_exists(&self, commit_sha: &str) -> Result<bool> {
+        match self.client
+            .get_commit(
+                &self.config.owner,
+                &self.config.repo,
+                commit_sha,
+                None,  // page
+                None,  // per_page
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Verify a release exists and is still a draft
+    ///
+    /// Used before Phase 7 to ensure the release wasn't accidentally published
+    /// or deleted between Phase 3 (creation) and Phase 7 (publish).
+    ///
+    /// # Arguments
+    /// * `release_id` - GitHub release ID from create_release result
+    ///
+    /// # Returns
+    /// - `Ok(true)` - Release exists and is still a draft
+    /// - `Ok(false)` - Release doesn't exist, is already published, or network error
+    pub async fn verify_release_is_draft(&self, release_id: u64) -> Result<bool> {
+        match self.client
+            .inner()
+            .repos(&self.config.owner, &self.config.repo)
+            .releases()
+            .get(release_id)
+            .await
+        {
+            Ok(release) => Ok(release.draft),
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Upload signed artifacts to release
     ///
     /// Reads artifact files and uploads them as release assets.

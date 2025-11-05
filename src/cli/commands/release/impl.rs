@@ -181,6 +181,18 @@ async fn execute_phases_with_retry(
         config.success_println("✓ Pushed to origin");
     }
     
+    // ===== PHASE 3 PRECHECK: VERIFY GITHUB API ACCESS =====
+    config.println("🔍 Verifying GitHub API access...");
+
+    if !github_manager.test_connection().await? {
+        return Err(ReleaseError::Cli(CliError::InvalidArguments {
+            reason: "GitHub API authentication failed. Check GH_TOKEN or GITHUB_TOKEN environment variable.".to_string(),
+        }));
+    }
+
+    config.success_println("✓ GitHub API authenticated");
+    config.println("");
+
     // ===== PHASE 3: CREATE GITHUB DRAFT RELEASE (with retry) =====
     config.println("🚀 Creating GitHub draft release...");
     
@@ -201,6 +213,26 @@ async fn execute_phases_with_retry(
     release_state.set_github_state(owner.to_string(), repo.to_string(), Some(&release_result));
     let release_id = release_result.release_id;
     
+    // ===== PHASE 4 PRECHECK: VERIFY BUILD TOOLS =====
+    config.println("🔍 Checking build tools...");
+
+    if !super::super::helpers::check_cargo_available() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo".to_string(),
+            reason: "cargo not found. Install Rust toolchain: https://rustup.rs/".to_string(),
+        }));
+    }
+
+    if !super::super::helpers::check_rustc_available() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "rustc".to_string(),
+            reason: "rustc not found. Install Rust toolchain: https://rustup.rs/".to_string(),
+        }));
+    }
+
+    config.success_println("✓ Build tools available");
+    config.println("");
+
     // ===== PHASE 4: BUILD BINARY (no retry - build errors are deterministic) =====
     if options.universal && cfg!(target_os = "macos") {
         config.println(&format!("🔨 Building universal binary '{}' (x86_64 + arm64)...", binary_name));

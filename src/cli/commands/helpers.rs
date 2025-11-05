@@ -423,3 +423,51 @@ pub(crate) fn build_for_target(
 
     Ok(())
 }
+
+/// Check if cargo is available on the system
+///
+/// Uses which::which() to locate cargo binary and verifies it responds
+/// to --version flag. Pattern adapted from bundler/builder.rs HAS_MAKENSIS check.
+///
+/// This is a PRECHECK - called before Phase 4 to fail fast if Rust toolchain
+/// is not installed. Prevents creating GitHub release when build will fail.
+///
+/// # Returns
+/// - `true` - cargo is available and working
+/// - `false` - cargo not found or not working
+pub(super) fn check_cargo_available() -> bool {
+    match which::which("cargo") {
+        Ok(path) => {
+            std::process::Command::new(&path)
+                .arg("--version")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Check if rustc is available on the system
+///
+/// Uses which::which() to locate rustc binary and verifies it responds
+/// to --version flag. Pattern adapted from bundler/builder.rs HAS_MAKENSIS check.
+///
+/// This is a PARANOID precheck - rustc should always be present if cargo is,
+/// but we check both to provide specific error messages if toolchain is broken.
+///
+/// # Returns
+/// - `true` - rustc is available and working
+/// - `false` - rustc not found or not working
+pub(super) fn check_rustc_available() -> bool {
+    match which::which("rustc") {
+        Ok(path) => {
+            std::process::Command::new(&path)
+                .arg("--version")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        }
+        Err(_) => false,
+    }
+}
