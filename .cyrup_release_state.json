@@ -1,26 +1,26 @@
 {
   "format_version": 1,
-  "release_id": "release-0.1.1-1762323805",
-  "target_version": "0.1.1",
+  "release_id": "release-0.1.2-1762344736",
+  "target_version": "0.1.2",
   "version_bump": "Patch",
-  "started_at": "2025-11-05T06:23:25.838980Z",
-  "updated_at": "2025-11-05T06:23:33.838393Z",
+  "started_at": "2025-11-05T12:12:16.062655Z",
+  "updated_at": "2025-11-05T12:12:20.206776Z",
   "current_phase": "GitHubRelease",
   "checkpoints": [
     {
       "name": "git_operations_complete",
       "phase": "GitOperations",
-      "timestamp": "2025-11-05T06:23:33.251029Z",
+      "timestamp": "2025-11-05T12:12:19.517489Z",
       "data": null,
       "rollback_capable": true
     },
     {
       "name": "github_release_created",
       "phase": "GitHubRelease",
-      "timestamp": "2025-11-05T06:23:33.838393Z",
+      "timestamp": "2025-11-05T12:12:20.206774Z",
       "data": {
-        "html_url": "https://github.com/cyrup-ai/kodegen-tools-filesystem/releases/tag/untagged-609b48ca88a4e331f76f",
-        "release_id": 259787382
+        "html_url": "https://github.com/cyrup-ai/kodegen-tools-filesystem/releases/tag/untagged-4c2b2f49e447fe03f9e3",
+        "release_id": 259881602
       },
       "rollback_capable": true
     }
@@ -30,8 +30,8 @@
   "github_state": {
     "owner": "cyrup-ai",
     "repo": "kodegen-tools-filesystem",
-    "release_id": 259787382,
-    "html_url": "https://github.com/cyrup-ai/kodegen-tools-filesystem/releases/tag/untagged-609b48ca88a4e331f76f",
+    "release_id": 259881602,
+    "html_url": "https://github.com/cyrup-ai/kodegen-tools-filesystem/releases/tag/untagged-4c2b2f49e447fe03f9e3",
     "draft": true,
     "prerelease": true
   },
