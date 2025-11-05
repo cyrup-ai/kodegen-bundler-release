@@ -122,10 +122,22 @@ async fn execute_phases_with_retry(
     repo: &str,
 ) -> Result<()> {
     // ===== PHASE 2: GIT OPERATIONS (with retry) =====
-    config.println("📝 Creating git commit...");
-    
-    // Manual retry loop for git operations (can't use retry_with_backoff due to &mut borrow)
-    let git_result = {
+    let git_result: Option<crate::git::ReleaseResult> = if release_state.has_completed(crate::state::ReleasePhase::GitOperations) {
+        config.println("✓ Skipping git operations (already completed)");
+        if let Some(ref git_state) = release_state.git_state {
+            if let Some(ref commit) = git_state.release_commit {
+                config.indent(&format!("   Commit: {}", commit.short_hash));
+            }
+            if let Some(ref tag) = git_state.release_tag {
+                config.indent(&format!("   Tag: {}", tag.name));
+            }
+        }
+        None
+    } else {
+        config.println("📝 Creating git commit...");
+        
+        // Manual retry loop for git operations (can't use retry_with_backoff due to &mut borrow)
+        let result = {
         let max_retries = config.retry_config.git_operations;
         let mut attempts = 0;
         
@@ -173,13 +185,27 @@ async fn execute_phases_with_retry(
                 }
             }
         }
+        };
+        
+        config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
+        config.success_println(&format!("✓ Tagged: {}", result.tag.name));
+        if !options.no_push {
+            config.success_println("✓ Pushed to origin");
+        }
+        
+        // Save state after git operations complete
+        release_state.set_phase(crate::state::ReleasePhase::GitOperations);
+        release_state.add_checkpoint(
+            "git_operations_complete".to_string(),
+            crate::state::ReleasePhase::GitOperations,
+            None,
+            true,  // rollback_capable
+        );
+        crate::state::save_release_state(&release_state).await?;
+        config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)");
+        
+        Some(result)
     };
-    
-    config.success_println(&format!("✓ Committed: \"{}\"", git_result.commit.message));
-    config.success_println(&format!("✓ Tagged: {}", git_result.tag.name));
-    if !options.no_push {
-        config.success_println("✓ Pushed to origin");
-    }
     
     // ===== PHASE 3 PRECHECK: VERIFY GITHUB API ACCESS =====
     config.println("🔍 Verifying GitHub API access...");
@@ -194,24 +220,71 @@ async fn execute_phases_with_retry(
     config.println("");
 
     // ===== PHASE 3: CREATE GITHUB DRAFT RELEASE (with retry) =====
-    config.println("🚀 Creating GitHub draft release...");
-    
-    let release_result = retry_with_backoff(
-        || github_manager.create_release(
-            new_version,
-            &git_result.commit.hash,
-            None,
-        ),
-        config.retry_config.github_api,
-        "GitHub release creation",
-        config,
-    ).await?;
-    
-    config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
-    
-    // Track release in state for potential cleanup
-    release_state.set_github_state(owner.to_string(), repo.to_string(), Some(&release_result));
-    let release_id = release_result.release_id;
+    let release_id = if release_state.has_completed(crate::state::ReleasePhase::GitHubRelease) {
+        config.println("✓ Skipping GitHub release creation (already completed)");
+        if let Some(ref github_state) = release_state.github_state {
+            config.indent(&format!("   Release: {}", github_state.html_url.as_ref().unwrap_or(&"N/A".to_string())));
+            github_state.release_id.ok_or_else(|| {
+                ReleaseError::State(crate::error::StateError::Corrupted {
+                    reason: "GitHubRelease checkpoint exists but release_id is None".to_string(),
+                })
+            })?
+        } else {
+            return Err(ReleaseError::State(crate::error::StateError::Corrupted {
+                reason: "GitHubRelease checkpoint exists but github_state is None".to_string(),
+            }));
+        }
+    } else {
+        config.println("🚀 Creating GitHub draft release...");
+        
+        // Get commit hash from git_result or from stored state
+        let commit_hash = if let Some(ref result) = git_result {
+            result.commit.hash.clone()
+        } else if let Some(ref git_state) = release_state.git_state {
+            git_state.release_commit.as_ref()
+                .ok_or_else(|| ReleaseError::State(crate::error::StateError::Corrupted {
+                    reason: "Git operations completed but release_commit is None".to_string(),
+                }))?
+                .hash.clone()
+        } else {
+            return Err(ReleaseError::State(crate::error::StateError::Corrupted {
+                reason: "Cannot create GitHub release: no git commit information available".to_string(),
+            }));
+        };
+        
+        let release_result = retry_with_backoff(
+            || github_manager.create_release(
+                new_version,
+                &commit_hash,
+                None,
+            ),
+            config.retry_config.github_api,
+            "GitHub release creation",
+            config,
+        ).await?;
+        
+        config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
+        
+        // Track release in state for potential cleanup
+        release_state.set_github_state(owner.to_string(), repo.to_string(), Some(&release_result));
+        let release_id = release_result.release_id;
+        
+        // Save state after GitHub release created
+        release_state.set_phase(crate::state::ReleasePhase::GitHubRelease);
+        release_state.add_checkpoint(
+            "github_release_created".to_string(),
+            crate::state::ReleasePhase::GitHubRelease,
+            Some(serde_json::json!({
+                "release_id": release_id,
+                "html_url": &release_result.html_url,
+            })),
+            true,  // rollback_capable
+        );
+        crate::state::save_release_state(&release_state).await?;
+        config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)");
+        
+        release_id
+    };
     
     // ===== PHASE 4 PRECHECK: VERIFY BUILD TOOLS =====
     config.println("🔍 Checking build tools...");
@@ -311,77 +384,109 @@ async fn execute_phases_with_retry(
     config.success_println(&format!("✓ Created {} platform package(s)", bundled_artifacts.len()));
     
     // ===== PHASE 6: UPLOAD PACKAGES (with retry per file) =====
-    config.println("📤 Uploading packages to GitHub...");
-    config.indent(&format!("   Release: {}", release_result.html_url));
-    config.println("");
-    
-    let mut upload_count = 0;
-    for artifact in &bundled_artifacts {
-        for artifact_path in &artifact.paths {
-            // Skip directories (e.g., .app bundles - only upload files)
-            if !artifact_path.is_file() {
-                continue;
-            }
-            
-            let filename = artifact_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            
-            config.indent(&format!("Uploading {}...", filename));
-            
-            // Upload with retry
-            let download_urls = retry_with_backoff(
-                || github_manager.upload_artifacts(
-                    release_id,
-                    std::slice::from_ref(artifact_path),
+    if release_state.has_completed(crate::state::ReleasePhase::GitHubRelease) 
+        && release_state.checkpoints.iter().any(|cp| cp.name == "artifacts_uploaded") {
+        config.println("✓ Skipping artifact upload (already completed)");
+    } else {
+        config.println("📤 Uploading packages to GitHub...");
+        config.println("");
+        
+        let mut upload_count = 0;
+        for artifact in &bundled_artifacts {
+            for artifact_path in &artifact.paths {
+                // Skip directories (e.g., .app bundles - only upload files)
+                if !artifact_path.is_file() {
+                    continue;
+                }
+                
+                let filename = artifact_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                
+                config.indent(&format!("Uploading {}...", filename));
+                
+                // Upload with retry
+                let download_urls = retry_with_backoff(
+                    || github_manager.upload_artifacts(
+                        release_id,
+                        std::slice::from_ref(artifact_path),
+                        new_version,
+                        config,
+                    ),
+                    config.retry_config.file_uploads,
+                    &format!("Upload {}", filename),
                     config,
-                ),
-                config.retry_config.file_uploads,
-                &format!("Upload {}", filename),
-                config,
-            ).await?;
-            
-            config.indent(&format!("✓ Uploaded {}", filename));
-            
-            // Display each download URL
-            for url in &download_urls {
-                config.indent(&format!("   📥 {}", url));
+                ).await?;
+                
+                config.indent(&format!("✓ Uploaded {}", filename));
+                
+                // Display each download URL
+                for url in &download_urls {
+                    config.indent(&format!("   📥 {}", url));
+                }
+                
+                upload_count += 1;
             }
-            
-            upload_count += 1;
         }
+        
+        config.success_println(&format!("✓ Uploaded {} artifact(s)", upload_count));
+        
+        // Save state after all uploads complete
+        release_state.set_phase(crate::state::ReleasePhase::GitHubRelease);  // Still in release phase
+        release_state.add_checkpoint(
+            "artifacts_uploaded".to_string(),
+            crate::state::ReleasePhase::GitHubRelease,
+            Some(serde_json::json!({
+                "upload_count": upload_count,
+            })),
+            false,  // Not rollback-capable (can't delete uploaded files easily)
+        );
+        crate::state::save_release_state(&release_state).await?;
+        config.verbose_println("ℹ️  Saved progress checkpoint (Artifacts uploaded)");
     }
     
-    config.success_println(&format!("✓ Uploaded {} artifact(s)", upload_count));
-    
-    // ===== PHASE 7 PRECHECK: VERIFY RELEASE IS READY TO PUBLISH =====
-    config.println("🔍 Verifying release is ready to publish...");
-
-    if !github_manager.verify_release_is_draft(release_id).await? {
-        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-            command: "publish_release".to_string(),
-            reason: format!(
-                "Release {} is not a draft or was deleted. Cannot publish.",
-                release_id
-            ),
-        }));
-    }
-
-    config.success_println("✓ Release verified as draft");
-    config.println("");
-
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
-    config.println("✅ Publishing GitHub release...");
-    
-    retry_with_backoff(
-        || github_manager.publish_draft_release(release_id),
-        config.retry_config.release_publishing,
-        "Publish GitHub release",
-        config,
-    ).await?;
-    
-    config.success_println(&format!("✓ Published release v{}", new_version));
+    if release_state.has_completed(crate::state::ReleasePhase::GitHubPublish) {
+        config.println("✓ Skipping release publishing (already published)");
+    } else {
+        config.println("🔍 Verifying release is ready to publish...");
+
+        if !github_manager.verify_release_is_draft(release_id).await? {
+            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "publish_release".to_string(),
+                reason: format!(
+                    "Release {} is not a draft or was deleted. Cannot publish.",
+                    release_id
+                ),
+            }));
+        }
+
+        config.success_println("✓ Release verified as draft");
+        config.println("");
+
+        config.println("✅ Publishing GitHub release...");
+        
+        retry_with_backoff(
+            || github_manager.publish_draft_release(release_id),
+            config.retry_config.release_publishing,
+            "Publish GitHub release",
+            config,
+        ).await?;
+        
+        config.success_println(&format!("✓ Published release v{}", new_version));
+        
+        // Save state after publishing
+        release_state.set_phase(crate::state::ReleasePhase::GitHubPublish);
+        release_state.add_checkpoint(
+            "release_published".to_string(),
+            crate::state::ReleasePhase::GitHubPublish,
+            None,
+            false,  // Can't unpublish
+        );
+        crate::state::save_release_state(&release_state).await?;
+        config.verbose_println("ℹ️  Saved progress checkpoint (Release published)");
+    }
     
     // ===== PHASE 8: PUBLISH TO CRATES.IO (with retry) =====
     if let Some(registry) = &options.registry {
@@ -505,7 +610,7 @@ pub(super) async fn perform_release_single_repo(
                     .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
                 
                 let bumper = crate::version::VersionBumper::from_version(current_version.clone());
-                let expected_version = bumper.bump(version_bump)?;
+                let expected_version = bumper.bump(version_bump.clone())?;
                 
                 if state.target_version != expected_version {
                     config.warning_println(&format!(
@@ -573,12 +678,21 @@ pub(super) async fn perform_release_single_repo(
         )
     };
     
+    // Extract version information for use in subsequent code
+    let new_version = release_state.target_version.clone();
+    let version_bump = release_state.version_bump.clone();
+    
+    // Parse current version from metadata for display
+    let current_version = semver::Version::parse(&metadata.version)
+        .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+            version: metadata.version.clone(),
+            reason: e.to_string(),
+        }))?;
+    
     // ===== PHASE 1: VERSION BUMP =====
     config.println("🔢 Bumping version...");
     
     let cargo_toml_path = temp_dir.join("Cargo.toml");
-    let bumper = crate::version::VersionBumper::from_version(current_version.clone());
-    let new_version = bumper.bump(version_bump.clone())?;
     
     config.success_println(&format!("✓ v{} → v{} ({})", current_version, new_version, version_bump));
     
@@ -667,6 +781,14 @@ pub(super) async fn perform_release_single_repo(
         Ok(()) => {
             // SUCCESS: Clear state and return
             git_manager.clear_release_state();
+            
+            // Delete state file on success
+            if let Err(e) = crate::state::cleanup_release_state() {
+                config.warning_println(&format!("⚠️  Failed to cleanup state file: {}", e));
+            } else {
+                config.verbose_println("ℹ️  Cleaned up state file (release complete)");
+            }
+            
             Ok(0)
         }
         Err(e) if !e.is_recoverable() => {
