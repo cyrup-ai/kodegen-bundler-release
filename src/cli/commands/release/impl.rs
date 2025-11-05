@@ -136,56 +136,12 @@ async fn execute_phases_with_retry(
     } else {
         config.println("📝 Creating git commit...");
         
-        // Manual retry loop for git operations (can't use retry_with_backoff due to &mut borrow)
-        let result = {
-        let max_retries = config.retry_config.git_operations;
-        let mut attempts = 0;
-        
-        loop {
-            match git_manager.perform_release(new_version, !options.no_push).await {
-                Ok(result) => {
-                    if attempts > 0 {
-                        config.success_println(&format!(
-                            "✓ Git operations succeeded after {} retry(ies)",
-                            attempts
-                        ));
-                    }
-                    break result;
-                }
-                Err(e) => {
-                    // Check if error is recoverable
-                    if !e.is_recoverable() {
-                        config.error_println("❌ Git operations failed with unrecoverable error");
-                        return Err(e);
-                    }
-                    
-                    // Recoverable error - check if we have retries left
-                    if attempts >= max_retries {
-                        config.error_println(&format!(
-                            "❌ Git operations failed after {} attempt(s)",
-                            attempts + 1
-                        ));
-                        return Err(e);
-                    }
-                    
-                    attempts += 1;
-                    
-                    // Exponential backoff: 1s, 2s, 4s, 8s, ...
-                    let wait_seconds = 2u64.pow(attempts - 1);
-                    
-                    config.warning_println(&format!(
-                        "⚠️  Git operations failed (attempt {}/{}): {}",
-                        attempts,
-                        max_retries + 1,
-                        e
-                    ));
-                    config.indent(&format!("   Retrying in {}s...", wait_seconds));
-                    
-                    tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
-                }
-            }
-        }
-        };
+        let result = retry_with_backoff(
+            || git_manager.perform_release(new_version, !options.no_push),
+            config.retry_config.git_operations,
+            "Git operations",
+            config,
+        ).await?;
         
         config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
         config.success_println(&format!("✓ Tagged: {}", result.tag.name));
@@ -832,71 +788,22 @@ pub(super) async fn perform_release_single_repo(
             config.indent("🔄 Rolling back git changes...");
             
             // Retry git rollback with exponential backoff
-            // NOTE: Cannot use retry_with_backoff() because rollback_release() needs &mut self
-            let rollback_result = {
-                let max_retries = config.retry_config.cleanup_operations;
-                let mut attempts = 0u32;
-                
-                loop {
-                    match git_manager.rollback_release().await {
-                        Ok(result) => {
-                            if attempts > 0 {
-                                config.success_println(&format!(
-                                    "✓ Git rollback succeeded after {} retry(ies)",
-                                    attempts
-                                ));
-                            }
-                            break result;
-                        }
-                        Err(e) => {
-                            // Check if error is recoverable
-                            if !e.is_recoverable() {
-                                config.error_println("❌ Git rollback failed with unrecoverable error");
-                                // Return error result wrapped in RollbackResult for consistent handling
-                                break crate::git::RollbackResult {
-                                    success: false,
-                                    rolled_back_operations: Vec::new(),
-                                    warnings: vec![format!("Git rollback failed: {}", e)],
-                                    duration: std::time::Duration::from_secs(0),
-                                };
-                            }
-                            
-                            // Recoverable error - check if we have retries left
-                            if attempts >= max_retries {
-                                // Retries exhausted
-                                config.error_println(&format!(
-                                    "❌ Git rollback failed after {} attempt(s)",
-                                    attempts + 1
-                                ));
-                                // Return error result wrapped in RollbackResult for consistent handling
-                                break crate::git::RollbackResult {
-                                    success: false,
-                                    rolled_back_operations: Vec::new(),
-                                    warnings: vec![format!("Git rollback failed after retries: {}", e)],
-                                    duration: std::time::Duration::from_secs(0),
-                                };
-                            }
-                            
-                            attempts += 1;
-                            
-                            // Exponential backoff: 1s, 2s, 4s, 8s
-                            let wait_seconds = 2u64.pow(attempts - 1);
-                            
-                            // Log retry attempt
-                            config.warning_println(&format!(
-                                "⚠️  Git rollback failed (attempt {}/{}): {}",
-                                attempts,
-                                max_retries + 1,
-                                e
-                            ));
-                            config.indent(&format!("   Retrying in {}s...", wait_seconds));
-                            
-                            // Wait before retry
-                            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
-                        }
-                    }
-                }
-            };
+            let rollback_result = retry_with_backoff(
+                || async {
+                    git_manager.rollback_release().await.or_else(|e| {
+                        // Wrap errors in RollbackResult for consistent handling
+                        Ok(crate::git::RollbackResult {
+                            success: false,
+                            rolled_back_operations: Vec::new(),
+                            warnings: vec![format!("Git rollback failed: {}", e)],
+                            duration: std::time::Duration::from_secs(0),
+                        })
+                    })
+                },
+                config.retry_config.cleanup_operations,
+                "Git rollback",
+                config,
+            ).await?;
             
             // Handle rollback result (same as before)
             if rollback_result.success {

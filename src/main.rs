@@ -65,9 +65,13 @@ fn parse_and_set_zshrc_env_vars() {
     // Check stderr for warnings/errors from .zshrc sourcing
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !stderr.is_empty() {
-        eprintln!("⚠️  Warning: errors while sourcing {}:", zshrc.display());
+        eprintln!("\n❌ Error: Failed to source {}:", zshrc.display());
         eprintln!("{}", stderr);
-        eprintln!("Continuing anyway, but some environment variables may not be set correctly.\n");
+        eprintln!("\n💡 Troubleshooting:");
+        eprintln!("   1. Fix syntax errors in your .zshrc file");
+        eprintln!("   2. OR skip .zshrc: export KODEGEN_SKIP_ZSHRC=1");
+        eprintln!("   3. OR set env vars directly: export APPLE_CERTIFICATE=...\n");
+        std::process::exit(1);
     }
 
     // Parse null-separated key-value pairs

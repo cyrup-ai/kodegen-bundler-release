@@ -35,29 +35,31 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
+    /// Parse retry count from environment variable with clamping to maximum
+    ///
+    /// # Arguments
+    /// * `var_name` - Environment variable name (e.g., "KODEGEN_RETRY_GIT")
+    /// * `default` - Default value if variable is not set or invalid
+    /// * `max` - Maximum allowed value (values above this are clamped)
+    ///
+    /// # Returns
+    /// Retry count clamped to [0, max]
+    fn parse_retry_env(var_name: &str, default: u32, max: u32) -> u32 {
+        std::env::var(var_name)
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .map(|v| v.min(max))  // Clamp to max
+            .unwrap_or(default)
+    }
+    
     /// Create config from environment variables with fallback to defaults
     pub fn from_env() -> Self {
         Self {
-            git_operations: std::env::var("KODEGEN_RETRY_GIT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
-            github_api: std::env::var("KODEGEN_RETRY_GITHUB")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
-            file_uploads: std::env::var("KODEGEN_RETRY_UPLOADS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(5),
-            release_publishing: std::env::var("KODEGEN_RETRY_PUBLISH")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
-            cleanup_operations: std::env::var("KODEGEN_RETRY_CLEANUP")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3),
+            git_operations: Self::parse_retry_env("KODEGEN_RETRY_GIT", 3, 10),
+            github_api: Self::parse_retry_env("KODEGEN_RETRY_GITHUB", 5, 20),
+            file_uploads: Self::parse_retry_env("KODEGEN_RETRY_UPLOADS", 5, 20),
+            release_publishing: Self::parse_retry_env("KODEGEN_RETRY_PUBLISH", 3, 10),
+            cleanup_operations: Self::parse_retry_env("KODEGEN_RETRY_CLEANUP", 3, 10),
         }
     }
     

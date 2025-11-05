@@ -363,7 +363,6 @@ impl StateManager {
                 .read(true)
                 .write(true)
                 .create(true)
-                .truncate(true)
                 .open(&self.lock_file_path)
             {
                 Ok(f) => f,
@@ -380,7 +379,6 @@ impl StateManager {
                 .read(true)
                 .write(true)
                 .create(true)
-                .truncate(true)
                 .open(&self.lock_file_path)
             {
                 Ok(f) => f,

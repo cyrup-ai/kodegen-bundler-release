@@ -30,11 +30,17 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)));
-        let _ = write!(&mut buffer, "ℹ ");
-        let _ = buffer.reset();
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan))).is_err()
+            || write!(&mut buffer, "ℹ ").is_err()
+            || buffer.reset().is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] ℹ  {}", message);
+        }
     }
 
     /// Print a success message
@@ -44,11 +50,17 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Green)).set_bold(true));
-        let _ = write!(&mut buffer, "✓");
-        let _ = buffer.reset();
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Green)).set_bold(true)).is_err()
+            || write!(&mut buffer, "✓").is_err()
+            || buffer.reset().is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] ✓ {}", message);
+        }
     }
 
     /// Print a warning message
@@ -58,26 +70,38 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_bold(true));
-        let _ = write!(&mut buffer, "⚠");
-        let _ = buffer.reset();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)));
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = buffer.reset();
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_bold(true)).is_err()
+            || write!(&mut buffer, "⚠").is_err()
+            || buffer.reset().is_err()
+            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow))).is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || buffer.reset().is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] ⚠ {}", message);
+        }
     }
 
     /// Print an error message (always shown)
     pub fn error(&self, message: &str) {
         let bufwtr = BufferWriter::stderr(ColorChoice::Auto);
         let mut buffer = bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true));
-        let _ = write!(&mut buffer, "✗");
-        let _ = buffer.reset();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = buffer.reset();
-        let _ = bufwtr.print(&buffer);
+        
+        // Try colored output to stderr
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true)).is_err()
+            || write!(&mut buffer, "✗").is_err()
+            || buffer.reset().is_err()
+            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::Red))).is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || buffer.reset().is_err()
+            || bufwtr.print(&buffer).is_err()
+        {
+            // Stderr failed - fallback to stdout as last resort
+            println!("[STDERR ERROR] ✗ {}", message);
+        }
     }
 
     /// Print a verbose/debug message (only in verbose mode)
@@ -87,13 +111,19 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Blue)));
-        let _ = write!(&mut buffer, "→");
-        let _ = buffer.reset();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::White)));
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = buffer.reset();
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Blue))).is_err()
+            || write!(&mut buffer, "→").is_err()
+            || buffer.reset().is_err()
+            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::White))).is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || buffer.reset().is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] → {}", message);
+        }
     }
 
     /// Print a progress message with spinner/activity indicator
@@ -103,11 +133,17 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)));
-        let _ = write!(&mut buffer, "⋯");
-        let _ = buffer.reset();
-        let _ = writeln!(&mut buffer, " {}", message);
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Magenta))).is_err()
+            || write!(&mut buffer, "⋯").is_err()
+            || buffer.reset().is_err()
+            || writeln!(&mut buffer, " {}", message).is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] ⋯ {}", message);
+        }
     }
 
     /// Print a section header
@@ -117,11 +153,17 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = writeln!(&mut buffer);
-        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)).set_bold(true));
-        let _ = writeln!(&mut buffer, "═══ {} ═══", title);
-        let _ = buffer.reset();
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try colored output to stdout
+        if writeln!(&mut buffer).is_err()
+            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)).set_bold(true)).is_err()
+            || writeln!(&mut buffer, "═══ {} ═══", title).is_err()
+            || buffer.reset().is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] \n═══ {} ═══", title);
+        }
     }
 
     /// Print indented text (for sub-items)
@@ -131,8 +173,14 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = writeln!(&mut buffer, "    {}", message);
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try output to stdout
+        if writeln!(&mut buffer, "    {}", message).is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR]     {}", message);
+        }
     }
 
     /// Print a plain message (respects quiet mode)
@@ -142,8 +190,14 @@ impl OutputManager {
         }
 
         let mut buffer = self.bufwtr.buffer();
-        let _ = writeln!(&mut buffer, "{}", message);
-        let _ = self.bufwtr.print(&buffer);
+        
+        // Try output to stdout
+        if writeln!(&mut buffer, "{}", message).is_err()
+            || self.bufwtr.print(&buffer).is_err()
+        {
+            // Fallback: plain text to stderr
+            eprintln!("[OUTPUT ERROR] {}", message);
+        }
     }
 
     /// Check if verbose mode is enabled
