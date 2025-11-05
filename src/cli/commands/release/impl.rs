@@ -6,6 +6,7 @@
 use crate::cli::RuntimeConfig;
 use crate::error::{CliError, PublishError, ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
+use crate::state::ReleaseState;
 
 use super::super::helpers::{create_bundles, detect_github_repo, parse_github_repo_string};
 use super::ReleaseOptions;
@@ -116,9 +117,9 @@ async fn execute_phases_with_retry(
     options: &ReleaseOptions,
     git_manager: &mut GitManager,
     github_manager: &crate::github::GitHubReleaseManager,
-    github_release_id: &mut Option<u64>,
-    _owner: &str,
-    _repo: &str,
+    release_state: &mut ReleaseState,
+    owner: &str,
+    repo: &str,
 ) -> Result<()> {
     // ===== PHASE 2: GIT OPERATIONS (with retry) =====
     config.println("📝 Creating git commit...");
@@ -196,8 +197,8 @@ async fn execute_phases_with_retry(
     
     config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
     
-    // Track release ID for potential cleanup
-    *github_release_id = Some(release_result.release_id);
+    // Track release in state for potential cleanup
+    release_state.set_github_state(owner.to_string(), repo.to_string(), Some(&release_result));
     let release_id = release_result.release_id;
     
     // ===== PHASE 4: BUILD BINARY (no retry - build errors are deterministic) =====
@@ -430,10 +431,7 @@ pub(super) async fn perform_release_single_repo(
 ) -> Result<i32> {
     config.println("🚀 Starting release in isolated environment");
     
-    // ===== PHASE 1: VERSION BUMP =====
-    config.println("🔢 Bumping version...");
-    
-    let cargo_toml_path = temp_dir.join("Cargo.toml");
+    // ===== CREATE RELEASE STATE FOR TRACKING =====
     let current_version = semver::Version::parse(&metadata.version)
         .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
             version: metadata.version.clone(),
@@ -442,6 +440,17 @@ pub(super) async fn perform_release_single_repo(
     
     let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
         .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments { reason: e }))?;
+    
+    let mut release_state = ReleaseState::new(
+        current_version.clone(),
+        version_bump.clone(),
+        crate::state::ReleaseConfig::default(),
+    );
+    
+    // ===== PHASE 1: VERSION BUMP =====
+    config.println("🔢 Bumping version...");
+    
+    let cargo_toml_path = temp_dir.join("Cargo.toml");
     let bumper = crate::version::VersionBumper::from_version(current_version.clone());
     let new_version = bumper.bump(version_bump.clone())?;
     
@@ -513,9 +522,6 @@ pub(super) async fn perform_release_single_repo(
     
     config.success_println("✓ All conflicts resolved - ready to release");
     
-    // Track GitHub release ID for cleanup (None until Phase 3 succeeds)
-    let mut github_release_id: Option<u64> = None;
-    
     // ===== EXECUTE PHASES 2-8 WITH RETRY AND SELECTIVE CLEANUP =====
     let result = execute_phases_with_retry(
         temp_dir,
@@ -526,7 +532,7 @@ pub(super) async fn perform_release_single_repo(
         options,
         &mut git_manager,
         &github_manager,
-        &mut github_release_id,
+        &mut release_state,
         &owner,
         &repo,
     ).await;
@@ -547,17 +553,19 @@ pub(super) async fn perform_release_single_repo(
             let mut cleanup_warnings = Vec::new();
             
             // 1. Delete GitHub release if created (Phase 3+)
-            if let Some(release_id) = github_release_id {
-                config.indent("🗑️  Deleting GitHub draft release...");
-                match github_manager.delete_release(release_id).await {
-                    Ok(()) => {
-                        config.indent("   ✓ Deleted GitHub release");
-                    }
-                    Err(delete_err) => {
-                        let warning = format!("Failed to delete GitHub release: {}", delete_err);
-                        cleanup_warnings.push(warning.clone());
-                        config.indent(&format!("   ⚠️  {}", warning));
-                        config.indent(&format!("   ℹ️  Manual cleanup: https://github.com/{}/{}/releases", owner, repo));
+            if let Some(github_state) = &release_state.github_state {
+                if let Some(release_id) = github_state.release_id {
+                    config.indent("🗑️  Deleting GitHub draft release...");
+                    match github_manager.delete_release(release_id).await {
+                        Ok(()) => {
+                            config.indent("   ✓ Deleted GitHub release");
+                        }
+                        Err(delete_err) => {
+                            let warning = format!("Failed to delete GitHub release: {}", delete_err);
+                            cleanup_warnings.push(warning.clone());
+                            config.indent(&format!("   ⚠️  {}", warning));
+                            config.indent(&format!("   ℹ️  Manual cleanup: https://github.com/{}/{}/releases", owner, repo));
+                        }
                     }
                 }
             }
