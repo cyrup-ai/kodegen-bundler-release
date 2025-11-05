@@ -397,10 +397,10 @@ impl GitOperations for KodegenGitOperations {
 
     async fn branch_exists(&self, branch_name: &str) -> Result<bool> {
         let branches = git::list_branches(self.repo.clone())
-            .await?
+            .await
             .map_err(|_| GitError::BranchOperationFailed {
-                reason: "Failed to list branches".to_string(),
-            })?;
+                reason: "Channel error".to_string(),
+            })??;
         Ok(branches.contains(&branch_name.to_string()))
     }
 
@@ -418,8 +418,8 @@ impl GitOperations for KodegenGitOperations {
         git::delete_branch(self.repo.clone(), branch_name.to_string(), force)
             .await
             .map_err(|_| GitError::BranchOperationFailed {
-                reason: format!("Failed to delete branch '{}'", branch_name),
-            })?;
+                reason: "Channel error".to_string(),
+            })??;
         Ok(())
     }
 
