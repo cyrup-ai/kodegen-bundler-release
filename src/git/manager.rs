@@ -9,6 +9,7 @@ use crate::git::{
     ValidationResult,
 };
 use semver::Version;
+use std::cell::RefCell;
 use std::path::Path;
 
 /// High-level Git manager for release operations

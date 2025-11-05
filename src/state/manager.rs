@@ -548,6 +548,11 @@ fn try_platform_lock(file: std::fs::File) -> std::result::Result<nix::fcntl::Flo
     }
 }
 
+// Windows error code from winerror.h
+// Returned when file is already locked by another process
+#[cfg(windows)]
+const ERROR_LOCK_VIOLATION: u32 = 33;
+
 /// Try to acquire exclusive lock using LockFileEx (Windows)
 #[cfg(windows)]
 fn try_platform_lock(file: &std::fs::File) -> LockResult {
@@ -561,25 +566,57 @@ fn try_platform_lock(file: &std::fs::File) -> LockResult {
     let raw_handle = file.as_raw_handle();
     let handle = HANDLE(raw_handle as isize);
     
+    // Initialize OVERLAPPED for synchronous file locking.
+    // Per Microsoft documentation: For synchronous operations (file not opened 
+    // with FILE_FLAG_OVERLAPPED), OVERLAPPED structure should have:
+    // - Offset/OffsetHigh: Byte offset to start locking (0 = start of file)
+    // - hEvent: NULL for synchronous operations
+    // Default::default() provides correct zero-initialization.
+    // Reference: https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex
     let mut overlapped = OVERLAPPED::default();
 
-    // SAFETY:
-    // - handle is valid (file was successfully opened)
-    // - overlapped is zero-initialized (correct for synchronous locking)
-    // - non-blocking attempt (LOCKFILE_FAIL_IMMEDIATELY)
+    // SAFETY: This unsafe block calls LockFileEx with the following guarantees:
+    // 
+    // 1. Handle validity:
+    //    - `file` is a valid reference to an open File with exclusive ownership
+    //    - The File owns the underlying OS handle returned by as_raw_handle()
+    //    - The borrow ensures no other code can close the file during this call
+    //    - The handle remains valid for the duration of the unsafe block
+    //
+    // 2. OVERLAPPED initialization:
+    //    - Zero-initialized via Default::default()
+    //    - Offset = 0, OffsetHigh = 0: Lock from start of file
+    //    - hEvent = NULL: Required for synchronous locking
+    //    - Internal/InternalHigh: Unused for synchronous file locking
+    //    - Per MSDN: This initialization is correct for synchronous LockFileEx
+    //
+    // 3. Lock parameters:
+    //    - LOCKFILE_EXCLUSIVE_LOCK: Request exclusive (write) lock
+    //    - LOCKFILE_FAIL_IMMEDIATELY: Non-blocking operation (returns immediately)
+    //    - dwReserved: Must be 0 per MSDN specification
+    //    - nNumberOfBytesToLockLow/High: Both u32::MAX
+    //      Combined with Offset=0, this locks entire file from byte 0 to 2^64-1
+    //      (standard practice for advisory whole-file locks)
+    //
+    // 4. OVERLAPPED reference validity:
+    //    - `overlapped` is stack-allocated and lives for entire unsafe block
+    //    - Mutable reference is valid and exclusive (no aliasing)
+    //    - LockFileEx does not retain the pointer beyond the call
+    //
+    // Reference: https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex
     unsafe {
         match LockFileEx(
             handle,
             LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-            0,        // Reserved
-            u32::MAX, // Lock entire file
-            u32::MAX,
+            0,        // Reserved (must be 0 per MSDN)
+            u32::MAX, // nNumberOfBytesToLockLow (lock entire file from offset 0)
+            u32::MAX, // nNumberOfBytesToLockHigh (lock to end: 2^64-1 bytes)
             &mut overlapped,
         ) {
             Ok(()) => LockResult::Acquired,
             Err(e) => {
                 let code = e.code().0 as u32;
-                if code == 33 {  // ERROR_LOCK_VIOLATION
+                if code == ERROR_LOCK_VIOLATION {
                     LockResult::Busy
                 } else {
                     LockResult::Error(format!("LockFileEx error {}: {:?}", code, e))
