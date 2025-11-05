@@ -556,15 +556,25 @@ pub(super) async fn perform_release_single_repo(
             if let Some(github_state) = &release_state.github_state {
                 if let Some(release_id) = github_state.release_id {
                     config.indent("🗑️  Deleting GitHub draft release...");
-                    match github_manager.delete_release(release_id).await {
+                    
+                    // Retry GitHub release deletion with exponential backoff
+                    let delete_result = retry_with_backoff(
+                        || github_manager.delete_release(release_id),
+                        3,  // Max 3 retries for cleanup operations
+                        "GitHub release deletion",
+                        config,
+                    ).await;
+                    
+                    match delete_result {
                         Ok(()) => {
                             config.indent("   ✓ Deleted GitHub release");
                         }
                         Err(delete_err) => {
-                            let warning = format!("Failed to delete GitHub release: {}", delete_err);
+                            // After 3 retries, log warning but continue cleanup
+                            let warning = format!("Failed to delete GitHub release after retries: {}", delete_err);
                             cleanup_warnings.push(warning.clone());
                             config.indent(&format!("   ⚠️  {}", warning));
-                            config.indent(&format!("   ℹ️  Manual cleanup: https://github.com/{}/{}/releases", owner, repo));
+                            config.indent(&format!("   ℹ️  If needed, manually delete: https://github.com/{}/{}/releases", owner, repo));
                         }
                     }
                 }
@@ -572,32 +582,92 @@ pub(super) async fn perform_release_single_repo(
             
             // 2. Rollback Git operations (Phase 2)
             config.indent("🔄 Rolling back git changes...");
-            match git_manager.rollback_release().await {
-                Ok(rollback_result) => {
-                    if rollback_result.success {
-                        config.indent("   ✓ Rolled back git changes:");
-                        for op in &rollback_result.rolled_back_operations {
-                            config.indent(&format!("     - {}", op));
-                        }
-                        if !rollback_result.warnings.is_empty() {
-                            for warning in &rollback_result.warnings {
-                                cleanup_warnings.push(warning.clone());
-                                config.indent(&format!("     ⚠️  {}", warning));
+            
+            // Retry git rollback with exponential backoff
+            // NOTE: Cannot use retry_with_backoff() because rollback_release() needs &mut self
+            let rollback_result = {
+                let max_retries = 3u32;
+                let mut attempts = 0u32;
+                
+                loop {
+                    match git_manager.rollback_release().await {
+                        Ok(result) => {
+                            if attempts > 0 {
+                                config.success_println(&format!(
+                                    "✓ Git rollback succeeded after {} retry(ies)",
+                                    attempts
+                                ));
                             }
+                            break result;
                         }
-                    } else {
-                        for warning in &rollback_result.warnings {
-                            cleanup_warnings.push(warning.clone());
-                            config.indent(&format!("   ⚠️  {}", warning));
+                        Err(e) => {
+                            // Check if error is recoverable
+                            if !e.is_recoverable() {
+                                config.error_println("❌ Git rollback failed with unrecoverable error");
+                                // Return error result wrapped in RollbackResult for consistent handling
+                                break crate::git::RollbackResult {
+                                    success: false,
+                                    rolled_back_operations: Vec::new(),
+                                    warnings: vec![format!("Git rollback failed: {}", e)],
+                                    duration: std::time::Duration::from_secs(0),
+                                };
+                            }
+                            
+                            // Recoverable error - check if we have retries left
+                            if attempts >= max_retries {
+                                // Retries exhausted
+                                config.error_println(&format!(
+                                    "❌ Git rollback failed after {} attempt(s)",
+                                    attempts + 1
+                                ));
+                                // Return error result wrapped in RollbackResult for consistent handling
+                                break crate::git::RollbackResult {
+                                    success: false,
+                                    rolled_back_operations: Vec::new(),
+                                    warnings: vec![format!("Git rollback failed after retries: {}", e)],
+                                    duration: std::time::Duration::from_secs(0),
+                                };
+                            }
+                            
+                            attempts += 1;
+                            
+                            // Exponential backoff: 1s, 2s, 4s, 8s
+                            let wait_seconds = 2u64.pow(attempts - 1);
+                            
+                            // Log retry attempt
+                            config.warning_println(&format!(
+                                "⚠️  Git rollback failed (attempt {}/{}): {}",
+                                attempts,
+                                max_retries + 1,
+                                e
+                            ));
+                            config.indent(&format!("   Retrying in {}s...", wait_seconds));
+                            
+                            // Wait before retry
+                            tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
                         }
                     }
                 }
-                Err(rollback_err) => {
-                    let warning = format!("Git rollback failed: {}", rollback_err);
+            };
+            
+            // Handle rollback result (same as before)
+            if rollback_result.success {
+                config.indent("   ✓ Rolled back git changes:");
+                for op in &rollback_result.rolled_back_operations {
+                    config.indent(&format!("     - {}", op));
+                }
+                if !rollback_result.warnings.is_empty() {
+                    for warning in &rollback_result.warnings {
+                        cleanup_warnings.push(warning.clone());
+                        config.indent(&format!("     ⚠️  {}", warning));
+                    }
+                }
+            } else {
+                for warning in &rollback_result.warnings {
                     cleanup_warnings.push(warning.clone());
                     config.indent(&format!("   ⚠️  {}", warning));
-                    config.indent("   ℹ️  Manual cleanup may be required: git tag -d, git push --delete origin");
                 }
+                config.indent("   ℹ️  If needed, manually run: git tag -d v{VERSION} && git push --delete origin v{VERSION}");
             }
             
             config.println("");
