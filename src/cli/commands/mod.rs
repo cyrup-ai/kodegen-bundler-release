@@ -4,6 +4,7 @@
 //! all modules and providing comprehensive error handling and user feedback.
 
 // Submodules
+mod devcontainer;
 mod helpers;
 mod release;
 mod temp_clone;
@@ -12,6 +13,7 @@ use crate::cli::{Args, RuntimeConfig};
 use crate::error::Result;
 
 // Import command executors
+use devcontainer::copy_embedded_devcontainer;
 use release::execute_release;
 
 /// Execute the main command based on parsed arguments

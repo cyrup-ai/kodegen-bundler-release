@@ -68,6 +68,10 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
     };
     let temp_dir_pathbuf = temp_dir.to_path_buf();
 
+    // Copy embedded .devcontainer to temp clone for Docker-based cross-platform builds
+    super::copy_embedded_devcontainer(&temp_dir_pathbuf)?;
+    config.verbose_println("✓ Copied .devcontainer to temp clone");
+
     // 5. Build release options (simplified)
     let options = ReleaseOptions {
         bump_type: args.bump_type.clone(),
