@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // External crate for glob pattern expansion
-use glob;
 
 /// Shared reference to workspace information using Arc for efficient cloning.
 /// WorkspaceInfo is immutable after analysis, so Arc without RwLock is sufficient.

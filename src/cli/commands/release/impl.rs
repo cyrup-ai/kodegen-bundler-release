@@ -286,63 +286,68 @@ async fn execute_phases_with_retry(
     
     // ===== PHASE 5: CREATE PLATFORM BUNDLES =====
     ctx.config.println("📦 Creating platform bundles...");
-    
-    let platforms = ["deb", "rpm", "dmg", "appimage"];
+
+    // Step 1: Determine which platforms to build
+    let all_platforms = get_platforms_to_build();
+    ctx.config.verbose_println(&format!("   Building {} platform(s)", all_platforms.len()));
+
+    // Step 2: Separate native vs Docker platforms
+    let native_platforms = get_native_platforms(&all_platforms);
+    let docker_platforms = get_docker_platforms(&all_platforms);
+
+    ctx.config.verbose_println(&format!(
+        "   Native: {} platform(s), Docker: {} platform(s)",
+        native_platforms.len(),
+        docker_platforms.len()
+    ));
+
     let mut all_artifact_paths: Vec<std::path::PathBuf> = Vec::new();
-    
-    for platform in &platforms {
-        ctx.config.verbose_println(&format!("   Building {} package...", platform));
-        
-        let bundle_output = std::process::Command::new("cargo")
-            .arg("run")
-            .arg("-p")
-            .arg("kodegen_bundler_bundle")
-            .arg("--")
-            .arg("--repo-path")
-            .arg(ctx.temp_dir)
-            .arg("--platform")
-            .arg(platform)
-            .arg("--binary-name")
-            .arg(ctx.binary_name)
-            .arg("--version")
-            .arg(&ctx.new_version.to_string())
-            .arg("--no-build") // Already built in Phase 4
-            .current_dir(ctx.temp_dir)
-            .output()
-            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-                command: format!("bundle {}", platform),
-                reason: e.to_string(),
-            }))?;
-        
-        if !bundle_output.status.success() {
-            ctx.config.warning_println(&format!(
-                "⚠️  Failed to create {} package: {}",
+
+    // Step 3: Install bundler and bundle all platforms
+    if !native_platforms.is_empty() || !docker_platforms.is_empty() {
+        // Ensure bundler is installed from GitHub
+        let bundler_binary = ensure_bundler_installed(ctx).await?;
+
+        // Step 4: Bundle native platforms
+        for platform in &native_platforms {
+            ctx.config.verbose_println(&format!("\n   Building {} (native)...", platform));
+
+            let artifacts = bundle_native_platform(
+                ctx,
+                &bundler_binary,
                 platform,
-                String::from_utf8_lossy(&bundle_output.stderr)
-            ));
-            continue; // Skip this platform but continue with others
+            ).await?;
+
+            all_artifact_paths.extend(artifacts);
         }
-        
-        ctx.config.indent(&format!("✓ Created {} package", platform));
+
+        // Step 5: Bundle Docker platforms
+        for platform in &docker_platforms {
+            ctx.config.verbose_println(&format!("\n   Building {} (Docker)...", platform));
+
+            let artifacts = bundle_docker_platform(
+                ctx,
+                &bundler_binary,
+                platform,
+            ).await?;
+
+            all_artifact_paths.extend(artifacts);
+        }
     }
-    
-    // Collect all generated artifacts from target/release-artifacts/
-    let artifacts_dir = ctx.temp_dir.join("target/release-artifacts");
-    if artifacts_dir.exists() {
-        let artifact_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&artifacts_dir)
-            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-                command: "read artifacts directory".to_string(),
-                reason: e.to_string(),
-            }))?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file())
-            .collect();
-        
-        all_artifact_paths.extend(artifact_paths);
+
+    // Step 6: Verify artifacts were created
+    if all_artifact_paths.is_empty() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "bundle".to_string(),
+            reason: "No artifacts were created".to_string(),
+        }));
     }
-    
-    ctx.config.success_println(&format!("✓ Created {} artifacts", all_artifact_paths.len()));
+
+    ctx.config.success_println(&format!(
+        "✓ Created {} artifact(s) across {} platform(s)",
+        all_artifact_paths.len(),
+        all_platforms.len()
+    ));
     
     // ===== PHASE 6: UPLOAD ARTIFACTS TO GITHUB RELEASE =====
     if !all_artifact_paths.is_empty() {
@@ -825,4 +830,204 @@ pub(super) async fn perform_release_single_repo(
             Err(e)
         }
     }
+}
+
+/// Get all platforms to build based on current OS
+fn get_platforms_to_build() -> Vec<&'static str> {
+    // Build all platforms by default
+    // Native platforms will be built directly, others via Docker
+    vec!["deb", "rpm", "appimage", "dmg", "app", "nsis"]
+}
+
+/// Get platforms that can be built natively on current OS
+fn get_native_platforms<'a>(all_platforms: &'a [&'a str]) -> Vec<&'a str> {
+    all_platforms
+        .iter()
+        .copied()
+        .filter(|p| is_native_platform(p))
+        .collect()
+}
+
+/// Get platforms that require Docker on current OS
+fn get_docker_platforms<'a>(all_platforms: &'a [&'a str]) -> Vec<&'a str> {
+    all_platforms
+        .iter()
+        .copied()
+        .filter(|p| !is_native_platform(p))
+        .collect()
+}
+
+/// Check if platform can be built natively on current OS
+fn is_native_platform(platform: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(platform, "dmg" | "app")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        matches!(platform, "deb" | "rpm" | "appimage")
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        matches!(platform, "nsis")
+    }
+}
+
+/// Ensure bundler binary is installed from GitHub
+///
+/// Uses cargo install to fetch from GitHub. Cargo automatically:
+/// - Checks GitHub for new commits (~0.7s)
+/// - Skips if already up-to-date
+/// - Rebuilds only if new commits exist
+async fn ensure_bundler_installed(ctx: &ReleasePhaseContext<'_>) -> Result<std::path::PathBuf> {
+    ctx.config.verbose_println("   Checking bundler installation from GitHub...");
+
+    let install_status = std::process::Command::new("cargo")
+        .arg("install")
+        .arg("--git")
+        .arg("https://github.com/cyrup-ai/kodegen-bundler-bundle")
+        .arg("kodegen_bundler_bundle")
+        .status()
+        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo install bundler".to_string(),
+            reason: e.to_string(),
+        }))?;
+
+    if !install_status.success() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo install bundler".to_string(),
+            reason: format!("Install failed with exit code: {:?}", install_status.code()),
+        }));
+    }
+
+    ctx.config.verbose_println("   ✓ Bundler ready");
+
+    // Return command name - cargo install puts it in PATH
+    Ok(std::path::PathBuf::from("kodegen_bundler_bundle"))
+}
+
+/// Bundle a single platform using native bundler binary
+async fn bundle_native_platform(
+    ctx: &ReleasePhaseContext<'_>,
+    bundler_binary: &std::path::PathBuf,
+    platform: &str,
+) -> Result<Vec<std::path::PathBuf>> {
+    let output = std::process::Command::new(bundler_binary)
+        .arg("--repo-path")
+        .arg(ctx.temp_dir)
+        .arg("--platform")
+        .arg(platform)
+        .arg("--binary-name")
+        .arg(ctx.binary_name)
+        .arg("--version")
+        .arg(ctx.new_version.to_string())
+        .arg("--no-build") // Already built in Phase 4
+        .output()
+        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: e.to_string(),
+        }))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: format!("Bundling failed:\n{}", stderr),
+        }));
+    }
+
+    // Parse artifact paths from stdout (one per line)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let artifacts: Vec<std::path::PathBuf> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    if artifacts.is_empty() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: "No artifacts produced".to_string(),
+        }));
+    }
+
+    // Verify artifacts exist
+    for artifact in &artifacts {
+        if !artifact.exists() {
+            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("bundle_{}", platform),
+                reason: format!("Artifact not found: {}", artifact.display()),
+            }));
+        }
+
+        ctx.config.indent(&format!("✓ {}", artifact.file_name().unwrap().to_string_lossy()));
+    }
+
+    Ok(artifacts)
+}
+
+/// Bundle a single platform using Docker (via bundler binary)
+///
+/// The bundler binary itself handles Docker internally for cross-platform builds.
+/// We just call the bundler binary the same way as native platforms.
+async fn bundle_docker_platform(
+    ctx: &ReleasePhaseContext<'_>,
+    bundler_binary: &std::path::PathBuf,
+    platform: &str,
+) -> Result<Vec<std::path::PathBuf>> {
+    // Call bundler binary (it will handle Docker internally)
+    let output = std::process::Command::new(bundler_binary)
+        .arg("--repo-path")
+        .arg(ctx.temp_dir)
+        .arg("--platform")
+        .arg(platform)
+        .arg("--binary-name")
+        .arg(ctx.binary_name)
+        .arg("--version")
+        .arg(ctx.new_version.to_string())
+        .arg("--no-build") // Already built in Phase 4
+        .output()
+        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: e.to_string(),
+        }))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: format!("Bundling failed:\n{}", stderr),
+        }));
+    }
+
+    // Parse artifact paths from stdout (one per line)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let artifacts: Vec<std::path::PathBuf> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    if artifacts.is_empty() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: "No artifacts produced".to_string(),
+        }));
+    }
+
+    // Verify artifacts exist
+    for artifact in &artifacts {
+        if !artifact.exists() {
+            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("bundle_{}", platform),
+                reason: format!("Artifact not found: {}", artifact.display()),
+            }));
+        }
+
+        ctx.config.indent(&format!("✓ {}", artifact.file_name().unwrap().to_string_lossy()));
+    }
+
+    Ok(artifacts)
 }

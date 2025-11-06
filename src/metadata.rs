@@ -24,7 +24,7 @@ pub struct Manifest {
 /// This is a minimal implementation that extracts package name, version, and binary name.
 pub fn load_manifest(cargo_toml_path: &Path) -> Result<Manifest> {
     let content = std::fs::read_to_string(cargo_toml_path)
-        .map_err(|e| ReleaseError::Io(e))?;
+        .map_err(ReleaseError::Io)?;
 
     // Parse package name
     let name = content

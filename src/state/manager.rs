@@ -7,7 +7,6 @@
 
 use crate::error::{Result, StateError};
 use crate::state::ReleaseState;
-use serde_json;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
