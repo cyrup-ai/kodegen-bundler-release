@@ -210,6 +210,12 @@ async fn load_or_create_release_state(
                     ));
                     config.warning_println("   Starting fresh release...");
                     
+                    // Clean up stale state file before creating new state
+                    // This prevents save_version conflicts with leftover files
+                    if let Err(e) = crate::state::cleanup_release_state() {
+                        config.warning_println(&format!("⚠️  Failed to cleanup stale state: {}", e));
+                    }
+                    
                     // Create new state
                     create_new_release_state(metadata, options)
                 } else {
@@ -222,6 +228,13 @@ async fn load_or_create_release_state(
             Err(e) => {
                 config.warning_println(&format!("⚠️  Failed to load state: {}", e));
                 config.warning_println("   Starting fresh release...");
+                
+                // Clean up corrupted state file before creating new state
+                // This prevents save_version conflicts with leftover files
+                if let Err(e) = crate::state::cleanup_release_state() {
+                    config.warning_println(&format!("⚠️  Failed to cleanup corrupted state: {}", e));
+                }
+                
                 create_new_release_state(metadata, options)
             }
         }

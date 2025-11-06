@@ -73,8 +73,11 @@ impl GitHubReleaseManager {
         RUSTLS_INITIALIZED.get_or_init(|| {
             rustls::crypto::ring::default_provider()
                 .install_default()
-                .expect("Failed to install rustls crypto provider. \
-                        Another provider may already be installed by application code.")
+                .unwrap_or_else(|e| {
+                    panic!("FATAL: Failed to install rustls crypto provider: {:?}. \
+                           This indicates another crypto provider may already be installed, \
+                           or the system is in an invalid state.", e)
+                })
         });
         
         // Get token from config or environment

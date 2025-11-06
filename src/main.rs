@@ -66,8 +66,13 @@ fn main() {
     env_logger::init();
 
     // Create tokio runtime
-    let runtime = tokio::runtime::Runtime::new()
-        .expect("Failed to create Tokio runtime");
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Failed to create Tokio runtime: {}", e);
+            process::exit(1);
+        }
+    };
 
     // Run the async main logic with environment config
     let exit_code = runtime.block_on(async_main(env_config));
