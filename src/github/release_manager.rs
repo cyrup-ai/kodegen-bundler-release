@@ -67,7 +67,7 @@ static RUSTLS_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 impl GitHubReleaseManager {
     /// Create new GitHub release manager
-    pub fn new(config: GitHubReleaseConfig) -> Result<Self> {
+    pub fn new(config: GitHubReleaseConfig, env_config: &crate::EnvConfig) -> Result<Self> {
         // Initialize rustls crypto provider exactly once per process
         // Uses OnceLock to ensure install_default() succeeds on first call only
         RUSTLS_INITIALIZED.get_or_init(|| {
@@ -79,8 +79,8 @@ impl GitHubReleaseManager {
         
         // Get token from config or environment
         let token = config.token.clone()
-            .or_else(|| std::env::var("GH_TOKEN").ok())
-            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .or_else(|| env_config.get("GH_TOKEN"))
+            .or_else(|| env_config.get("GITHUB_TOKEN"))
             .ok_or_else(|| ReleaseError::Cli(CliError::InvalidArguments {
                 reason: "GitHub token not provided. Set GH_TOKEN or GITHUB_TOKEN environment variable or use --github-token".to_string(),
             }))?;

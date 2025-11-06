@@ -414,6 +414,15 @@ impl GitOperations for KodegenGitOperations {
             })?)
     }
 
+    async fn check_remote_tag_exists(&self, remote: &str, tag_name: &str) -> Result<bool> {
+        Ok(git::check_remote_tag_exists(&self.repo, remote, tag_name)
+            .await
+            .map_err(|_| GitError::RemoteOperationFailed {
+                operation: "check remote tag".to_string(),
+                reason: "Channel error".to_string(),
+            })?)
+    }
+
     async fn delete_branch(&self, branch_name: &str, force: bool) -> Result<()> {
         git::delete_branch(self.repo.clone(), branch_name.to_string(), force)
             .await

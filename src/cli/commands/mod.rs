@@ -24,7 +24,7 @@ pub async fn execute_command(args: Args, env_config: EnvConfig) -> Result<i32> {
         return Ok(1);
     }
 
-    let config = RuntimeConfig::from(&args);
+    let config = RuntimeConfig::new(&args, &env_config);
 
     // Execute release command
     let result = execute_release(&args, &config, &env_config).await;

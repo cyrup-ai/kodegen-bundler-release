@@ -5,7 +5,7 @@
 
 #![allow(dead_code)] // Public API - methods/fields may be used by external consumers
 
-use super::retry_config::RetryConfig;
+use super::retry_config::{RetryConfig, CargoTimeoutConfig};
 use crate::version::VersionBump;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
@@ -242,6 +242,8 @@ pub struct RuntimeConfig {
     pub docker_pids_limit: Option<u32>,
     /// Retry configuration for various operations
     pub retry_config: RetryConfig,
+    /// Timeout configuration for cargo operations
+    pub cargo_timeout_config: CargoTimeoutConfig,
 }
 
 /// Verbosity level for output
@@ -255,8 +257,9 @@ pub enum VerbosityLevel {
     Verbose,
 }
 
-impl From<&Args> for RuntimeConfig {
-    fn from(args: &Args) -> Self {
+impl RuntimeConfig {
+    /// Create runtime configuration from arguments and environment config
+    pub fn new(args: &Args, env_config: &crate::EnvConfig) -> Self {
         let verbosity = if args.quiet {
             VerbosityLevel::Quiet
         } else if args.verbose {
@@ -281,8 +284,16 @@ impl From<&Args> for RuntimeConfig {
             docker_memory_swap: args.docker_memory_swap.clone(),
             docker_cpus: args.docker_cpus.clone(),
             docker_pids_limit: args.docker_pids_limit,
-            retry_config: RetryConfig::from_env(),
+            retry_config: RetryConfig::from_env(env_config),
+            cargo_timeout_config: CargoTimeoutConfig::from_env(env_config),
         }
+    }
+}
+
+impl From<&Args> for RuntimeConfig {
+    fn from(args: &Args) -> Self {
+        // For backward compatibility - uses default EnvConfig
+        Self::new(args, &crate::EnvConfig::default())
     }
 }
 

@@ -149,15 +149,31 @@ pub async fn execute_phases_with_retry(
     // ===== PHASE 4: BUILD RELEASE BINARIES =====
     ctx.config.println("🔨 Building release binaries...");
     
-    let build_output = std::process::Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .current_dir(ctx.release_clone_path)
-        .output()
-        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-            command: "cargo build --release".to_string(),
-            reason: e.to_string(),
-        }))?;
+    use tokio::process::Command;
+    use tokio::time::{timeout, Duration};
+    
+    let build_timeout = Duration::from_secs(ctx.config.cargo_timeout_config.build_timeout_secs);
+    
+    let build_output = timeout(
+        build_timeout,
+        Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .current_dir(ctx.release_clone_path)
+            .output()
+    )
+    .await
+    .map_err(|_| ReleaseError::Cli(CliError::ExecutionFailed {
+        command: "cargo build --release".to_string(),
+        reason: format!(
+            "Build timed out after {} seconds. Try setting KODEGEN_BUILD_TIMEOUT to a higher value.",
+            ctx.config.cargo_timeout_config.build_timeout_secs
+        ),
+    }))?
+    .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+        command: "cargo build --release".to_string(),
+        reason: e.to_string(),
+    }))?;
     
     if !build_output.status.success() {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {

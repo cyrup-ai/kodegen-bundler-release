@@ -7,6 +7,7 @@ use crate::cli::RuntimeConfig;
 use crate::error::{GitError, ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
 use crate::state::{has_active_release, load_release_state, LoadStateResult, ReleaseState};
+use crate::EnvConfig;
 
 use super::super::super::helpers::{detect_github_repo, parse_github_repo_string};
 use super::super::ReleaseOptions;
@@ -24,6 +25,7 @@ pub async fn perform_release_single_repo(
     binary_name: String,
     config: &RuntimeConfig,
     options: &ReleaseOptions,
+    env_config: &EnvConfig,
 ) -> Result<i32> {
     config.println("🚀 Starting release in isolated environment");
     
@@ -110,7 +112,7 @@ pub async fn perform_release_single_repo(
         notes: None,
         token: None, // From GH_TOKEN or GITHUB_TOKEN environment variable
     };
-    let github_manager = crate::github::GitHubReleaseManager::new(github_config)?;
+    let github_manager = crate::github::GitHubReleaseManager::new(github_config, env_config)?;
     
     // Check and cleanup existing GitHub release
     if github_manager.release_exists(&new_version).await? {
@@ -328,18 +330,29 @@ fn verify_version_in_parsed_toml(
 async fn update_cargo_lock(temp_dir: &std::path::Path, new_version: &semver::Version) -> Result<()> {
     use tokio::process::Command;
     use std::process::Stdio;
+    use tokio::time::{timeout, Duration};
 
-    let update_output = Command::new("cargo")
-        .arg("update")
-        .arg("--workspace")
-        .current_dir(temp_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
-            reason: format!("Failed to run cargo update: {}", e),
-        }))?;
+    let update_timeout = Duration::from_secs(300); // Default 5 min - config not available here
+    let update_output = timeout(
+        update_timeout,
+        Command::new("cargo")
+            .arg("update")
+            .arg("--workspace")
+            .current_dir(temp_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+    )
+    .await
+    .map_err(|_| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
+        reason: format!(
+            "Cargo update timed out after {} seconds. Dependency resolution may be stalled.",
+            update_timeout.as_secs()
+        ),
+    }))?
+    .map_err(|e| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
+        reason: format!("Failed to run cargo update: {}", e),
+    }))?;
 
     if !update_output.status.success() {
         let stderr = String::from_utf8_lossy(&update_output.stderr);

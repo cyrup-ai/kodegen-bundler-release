@@ -40,28 +40,29 @@ impl RetryConfig {
     /// Parse retry count from environment variable with clamping to maximum
     ///
     /// # Arguments
+    /// * `env_config` - Environment configuration to read from
     /// * `var_name` - Environment variable name (e.g., "KODEGEN_RETRY_GIT")
     /// * `default` - Default value if variable is not set or invalid
     /// * `max` - Maximum allowed value (values above this are clamped)
     ///
     /// # Returns
     /// Retry count clamped to [0, max]
-    fn parse_retry_env(var_name: &str, default: u32, max: u32) -> u32 {
-        std::env::var(var_name)
-            .ok()
+    fn parse_retry_env(env_config: &crate::EnvConfig, var_name: &str, default: u32, max: u32) -> u32 {
+        env_config
+            .get(var_name)
             .and_then(|s| s.parse::<u32>().ok())
             .map(|v| v.min(max))  // Clamp to max
             .unwrap_or(default)
     }
     
     /// Create config from environment variables with fallback to defaults
-    pub fn from_env() -> Self {
+    pub fn from_env(env_config: &crate::EnvConfig) -> Self {
         Self {
-            git_operations: Self::parse_retry_env("KODEGEN_RETRY_GIT", 3, 10),
-            github_api: Self::parse_retry_env("KODEGEN_RETRY_GITHUB", 5, 20),
-            file_uploads: Self::parse_retry_env("KODEGEN_RETRY_UPLOADS", 5, 20),
-            release_publishing: Self::parse_retry_env("KODEGEN_RETRY_PUBLISH", 3, 10),
-            cleanup_operations: Self::parse_retry_env("KODEGEN_RETRY_CLEANUP", 3, 10),
+            git_operations: Self::parse_retry_env(env_config, "KODEGEN_RETRY_GIT", 3, 10),
+            github_api: Self::parse_retry_env(env_config, "KODEGEN_RETRY_GITHUB", 5, 20),
+            file_uploads: Self::parse_retry_env(env_config, "KODEGEN_RETRY_UPLOADS", 5, 20),
+            release_publishing: Self::parse_retry_env(env_config, "KODEGEN_RETRY_PUBLISH", 3, 10),
+            cleanup_operations: Self::parse_retry_env(env_config, "KODEGEN_RETRY_CLEANUP", 3, 10),
         }
     }
     
@@ -98,5 +99,59 @@ impl RetryConfig {
             ));
         }
         Ok(())
+    }
+}
+
+
+/// Timeout configuration for long-running cargo operations
+#[derive(Debug, Clone)]
+pub struct CargoTimeoutConfig {
+    /// Timeout for cargo build operations (seconds)
+    pub build_timeout_secs: u64,
+    
+    /// Timeout for cargo update operations (seconds)
+    pub update_timeout_secs: u64,
+}
+
+impl Default for CargoTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            build_timeout_secs: 600,   // 10 minutes for builds
+            update_timeout_secs: 300,  // 5 minutes for updates
+        }
+    }
+}
+
+impl CargoTimeoutConfig {
+    /// Create config from environment variables with fallback to defaults
+    pub fn from_env(env_config: &crate::EnvConfig) -> Self {
+        Self {
+            build_timeout_secs: Self::parse_timeout_env(
+                env_config, 
+                "KODEGEN_BUILD_TIMEOUT", 
+                600,    // default
+                3600    // max: 1 hour
+            ),
+            update_timeout_secs: Self::parse_timeout_env(
+                env_config, 
+                "KODEGEN_UPDATE_TIMEOUT", 
+                300,    // default
+                1800    // max: 30 minutes
+            ),
+        }
+    }
+    
+    /// Parse timeout from environment variable with clamping
+    fn parse_timeout_env(
+        env_config: &crate::EnvConfig, 
+        var_name: &str, 
+        default: u64, 
+        max: u64
+    ) -> u64 {
+        env_config
+            .get(var_name)
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|v| v.min(max))
+            .unwrap_or(default)
     }
 }

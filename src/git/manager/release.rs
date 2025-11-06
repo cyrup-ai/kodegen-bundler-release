@@ -267,14 +267,34 @@ impl<'a> ReleaseOperations<'a> {
         };
         
         if let Some(tag_name) = tag_name {
-            match self.repository.delete_tag(&tag_name, true).await {
-                Ok(()) => {
-                    rolled_back_operations.push(format!("Deleted remote tag {}", tag_name));
+            // First, verify tag exists on remote before attempting deletion
+            match self.repository.check_remote_tag_exists("origin", &tag_name).await {
+                Ok(true) => {
+                    // Tag exists on remote, proceed with deletion
+                    match self.repository.delete_tag(&tag_name, true).await {
+                        Ok(()) => {
+                            rolled_back_operations.push(format!("Deleted remote tag {}", tag_name));
+                        }
+                        Err(e) => {
+                            warnings.push(format!(
+                                "Failed to delete remote tag {}: {}",
+                                tag_name, e
+                            ));
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // Tag doesn't exist on remote - not an error, just note it
+                    rolled_back_operations.push(format!(
+                        "Remote tag {} not found (may not have been pushed)",
+                        tag_name
+                    ));
                 }
                 Err(e) => {
+                    // Network error checking remote state - skip deletion
                     warnings.push(format!(
-                        "Failed to delete remote tag {}: {}",
-                        tag_name, e
+                        "Could not verify remote tag state: {}. Skipping remote cleanup.",
+                        e
                     ));
                 }
             }
@@ -325,17 +345,37 @@ impl<'a> ReleaseOperations<'a> {
         };
         
         if let Some(branch_name) = branch_name {
-            match self.repository.delete_remote_branch("origin", &branch_name).await {
-                Ok(()) => {
+            // First, verify branch exists on remote before attempting deletion
+            match self.repository.remote_branch_exists("origin", &branch_name).await {
+                Ok(true) => {
+                    // Branch exists on remote, proceed with deletion
+                    match self.repository.delete_remote_branch("origin", &branch_name).await {
+                        Ok(()) => {
+                            rolled_back_operations.push(format!(
+                                "Deleted remote branch {}", 
+                                branch_name
+                            ));
+                        }
+                        Err(e) => {
+                            warnings.push(format!(
+                                "Failed to delete remote branch {}: {}",
+                                branch_name, e
+                            ));
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // Branch doesn't exist on remote - not an error, just note it
                     rolled_back_operations.push(format!(
-                        "Deleted remote branch {}", 
+                        "Remote branch {} not found (may not have been pushed)",
                         branch_name
                     ));
                 }
                 Err(e) => {
+                    // Network error checking remote state - skip deletion
                     warnings.push(format!(
-                        "Failed to delete remote branch {}: {}",
-                        branch_name, e
+                        "Could not verify remote branch state: {}. Skipping remote cleanup.",
+                        e
                     ));
                 }
             }
