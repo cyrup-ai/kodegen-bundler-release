@@ -159,6 +159,29 @@ pub enum VersionError {
         /// Current version
         version: String,
     },
+
+    /// Verification of Cargo.toml update failed
+    #[error("Verification failed for {path}: {reason}")]
+    VerificationFailed {
+        /// Path to the file that failed verification
+        path: PathBuf,
+        /// Reason for the verification failure
+        reason: String,
+    },
+
+    /// Failed to update Cargo.lock
+    #[error("Failed to update Cargo.lock: {reason}")]
+    CargoUpdateFailed {
+        /// Reason for the failure
+        reason: String,
+    },
+
+    /// Cargo.lock doesn't contain expected version
+    #[error("Cargo.lock doesn't contain expected version {expected_version}")]
+    LockFileMismatch {
+        /// Expected version that should be in Cargo.lock
+        expected_version: String,
+    },
 }
 
 /// Git operation errors

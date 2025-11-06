@@ -29,7 +29,7 @@ This creates tiny (~200KB) binaries in `target/release/`:
 This will:
 1. Build mock binaries (~5 seconds)
 2. Run bundler with mock binaries
-3. Validate package creation (.deb, .rpm, .msi, etc.)
+3. Validate package creation (.deb, .rpm, .exe, etc.)
 4. Complete in <1 minute total
 
 ## What's Tested

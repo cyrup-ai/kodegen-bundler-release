@@ -639,7 +639,79 @@ pub(super) async fn perform_release_single_repo(
     
     // Update Cargo.toml with new version
     crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
-    config.success_println("✓ Updated Cargo.toml");
+
+    // VERIFY: Read back and confirm version matches
+    let verification_content = std::fs::read_to_string(&cargo_toml_path)
+        .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.clone(),
+            reason: format!("Cannot read back file after write: {}", e),
+        }))?;
+
+    let verification_parsed: toml::Value = toml::from_str(&verification_content)
+        .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.clone(),
+            reason: format!("TOML is invalid after update: {}", e),
+        }))?;
+
+    let written_version = verification_parsed
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.clone(),
+            reason: "Version field missing after update".to_string(),
+        }))?;
+
+    if written_version != new_version.to_string() {
+        return Err(ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.clone(),
+            reason: format!(
+                "Version mismatch: expected {}, found {}",
+                new_version, written_version
+            ),
+        }));
+    }
+
+    // Update Cargo.lock to match new version
+    use tokio::process::Command;
+    use std::process::Stdio;
+
+    let update_output = Command::new("cargo")
+        .arg("update")
+        .arg("--workspace")
+        .current_dir(temp_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
+            reason: format!("Failed to run cargo update: {}", e),
+        }))?;
+
+    if !update_output.status.success() {
+        let stderr = String::from_utf8_lossy(&update_output.stderr);
+        return Err(ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
+            reason: format!("cargo update failed:\n{}", stderr),
+        }));
+    }
+
+    // Verify Cargo.lock was updated
+    let lock_path = temp_dir.join("Cargo.lock");
+    if lock_path.exists() {
+        let lock_content = std::fs::read_to_string(&lock_path)
+            .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+                path: lock_path.clone(),
+                reason: format!("Cannot read Cargo.lock: {}", e),
+            }))?;
+        
+        if !lock_content.contains(&new_version.to_string()) {
+            return Err(ReleaseError::Version(crate::error::VersionError::LockFileMismatch {
+                expected_version: new_version.to_string(),
+            }));
+        }
+    }
+
+    config.success_println("✓ Updated and verified Cargo.toml and Cargo.lock");
     
     // ===== PHASE 1.5: AUTOMATIC CLEANUP OF CONFLICTS =====
     config.println("🔍 Checking for conflicting artifacts...");
@@ -854,21 +926,98 @@ fn get_docker_platforms<'a>(all_platforms: &'a [&'a str]) -> Vec<&'a str> {
 }
 
 /// Check if platform can be built natively on current OS
+///
+/// Uses runtime platform detection via `std::env::consts::OS` instead of
+/// compile-time cfg attributes, enabling universal binaries.
 fn is_native_platform(platform: &str) -> bool {
+    match (std::env::consts::OS, platform) {
+        // macOS native packages
+        ("macos", "dmg" | "app") => true,
+
+        // Linux native packages  
+        ("linux", "deb" | "rpm" | "appimage") => true,
+
+        // Windows native packages
+        ("windows", "nsis") => true,
+
+        // Everything else requires Docker
+        _ => false,
+    }
+}
+
+/// Determine the architecture string for the current build target
+/// 
+/// This reads the actual target architecture from the build context,
+/// not from hardcoded assumptions.
+fn detect_target_architecture() -> Result<&'static str> {
+    // On macOS, check if building for ARM or Intel
     #[cfg(target_os = "macos")]
     {
-        matches!(platform, "dmg" | "app")
+        #[cfg(target_arch = "aarch64")]
+        return Ok("arm64");
+        
+        #[cfg(target_arch = "x86_64")]
+        return Ok("x86_64");
     }
-
+    
+    // On Linux, check target architecture
     #[cfg(target_os = "linux")]
     {
-        matches!(platform, "deb" | "rpm" | "appimage")
+        #[cfg(target_arch = "aarch64")]
+        return Ok("arm64");
+        
+        #[cfg(target_arch = "x86_64")]
+        return Ok("amd64");
+        
+        #[cfg(target_arch = "x86")]
+        return Ok("i386");
     }
-
+    
+    // On Windows
     #[cfg(target_os = "windows")]
     {
-        matches!(platform, "nsis")
+        #[cfg(target_arch = "x86_64")]
+        return Ok("x64");
+        
+        #[cfg(target_arch = "x86")]
+        return Ok("x86");
+        
+        #[cfg(target_arch = "aarch64")]
+        return Ok("arm64");
     }
+    
+    #[allow(unreachable_code)]
+    Err(ReleaseError::Cli(CliError::InvalidArguments {
+        reason: format!("Unsupported target architecture: {}", std::env::consts::ARCH),
+    }))
+}
+
+/// Construct the output filename for a platform artifact
+/// 
+/// Includes the actual target architecture in the filename.
+fn construct_output_filename(
+    ctx: &ReleasePhaseContext<'_>,
+    platform: &str,
+    arch: &str,
+) -> Result<String> {
+    let product_name = &ctx.metadata.name;
+    let version = ctx.new_version.to_string();
+    
+    let filename = match platform {
+        "deb" => format!("{}_{}_{}.deb", product_name, version, arch),
+        "rpm" => format!("{}-{}-1.{}.rpm", product_name, version, arch),
+        "dmg" => format!("{}-{}-{}.dmg", product_name, version, arch),
+        "app" | "macos-bundle" => format!("{}.app", product_name),
+        "nsis" | "exe" => format!("{}_{}_{}_setup.exe", product_name, version, arch),
+        "appimage" => format!("{}-{}-{}.AppImage", product_name, version, arch),
+        _ => {
+            return Err(ReleaseError::Cli(CliError::InvalidArguments {
+                reason: format!("Unknown platform: {}", platform),
+            }));
+        }
+    };
+    
+    Ok(filename)
 }
 
 /// Ensure bundler binary is installed from GitHub
@@ -910,6 +1059,22 @@ async fn bundle_native_platform(
     bundler_binary: &std::path::PathBuf,
     platform: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
+    // Detect target architecture
+    let arch = detect_target_architecture()?;
+    
+    // Construct output path with explicit architecture
+    // Note: We do NOT create the artifacts directory - bundler handles this
+    let filename = construct_output_filename(ctx, platform, arch)?;
+    let output_path = ctx.temp_dir.join("artifacts").join(&filename);
+    
+    ctx.config.verbose_println(&format!(
+        "   Target architecture: {}\n   Output path: {}",
+        arch,
+        output_path.display()
+    ));
+    
+    // Call bundler with explicit output path
+    // Bundler will create parent directories and move artifact there
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
         .arg(ctx.temp_dir)
@@ -919,35 +1084,49 @@ async fn bundle_native_platform(
         .arg(ctx.binary_name)
         .arg("--version")
         .arg(ctx.new_version.to_string())
-        .arg("--no-build") // Already built in Phase 4
+        .arg("--output-binary")
+        .arg(&output_path)  // ← CALLER SPECIFIES PATH
+        .arg("--no-build")
         .output()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
             reason: e.to_string(),
         }))?;
-
+    
+    // Capture stdout and stderr for diagnostics
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    if ctx.config.is_verbose() && !stdout.is_empty() {
+        ctx.config.verbose_println(&format!("   Bundler stdout:\n{}", stdout));
+    }
+    
+    if !stderr.is_empty() {
+        ctx.config.verbose_println(&format!("   Bundler stderr:\n{}", stderr));
+    }
+    
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
-            reason: format!("Bundling failed:\n{}", stderr),
+            reason: format!("Bundling failed (exit code {:?}):\n{}", output.status.code(), stderr),
         }));
     }
-
-    // Construct expected artifact path based on platform
-    let artifact_path = construct_artifact_path(ctx, platform)?;
-
-    // Verify artifact exists
-    if !artifact_path.exists() {
+    
+    // Contract enforcement: exit code 0 means artifact exists at output_path
+    if !output_path.exists() {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
-            reason: format!("Artifact not found: {}", artifact_path.display()),
+            reason: format!(
+                "Bundler exit code 0 but artifact not found at {}.\n\
+                 This is a contract violation in the bundler.",
+                output_path.display()
+            ),
         }));
     }
-
-    ctx.config.indent(&format!("✓ {}", artifact_path.file_name().unwrap().to_string_lossy()));
-
-    Ok(vec![artifact_path])
+    
+    ctx.config.indent(&format!("✓ {}", filename));
+    
+    Ok(vec![output_path])
 }
 
 /// Bundle a single platform using Docker (via bundler binary)
@@ -959,7 +1138,31 @@ async fn bundle_docker_platform(
     bundler_binary: &std::path::PathBuf,
     platform: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
-    // Call bundler binary (it will handle Docker internally)
+    // For Docker platforms, architecture depends on the Docker target
+    // For Linux platforms in Docker, we're typically building for x86_64/amd64
+    let arch = match platform {
+        "deb" | "rpm" => "amd64",  // Default Docker Linux target
+        "appimage" => "x86_64",
+        _ => {
+            return Err(ReleaseError::Cli(CliError::InvalidArguments {
+                reason: format!("Docker bundling not supported for platform: {}", platform),
+            }));
+        }
+    };
+    
+    // Construct output path with explicit architecture
+    // Note: We do NOT create the artifacts directory - bundler handles this
+    let filename = construct_output_filename(ctx, platform, arch)?;
+    let output_path = ctx.temp_dir.join("artifacts").join(&filename);
+    
+    ctx.config.verbose_println(&format!(
+        "   Docker target architecture: {}\n   Output path: {}",
+        arch,
+        output_path.display()
+    ));
+    
+    // Call bundler with explicit output path (bundler handles Docker internally)
+    // Bundler will create parent directories and move artifact there
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
         .arg(ctx.temp_dir)
@@ -969,73 +1172,47 @@ async fn bundle_docker_platform(
         .arg(ctx.binary_name)
         .arg("--version")
         .arg(ctx.new_version.to_string())
-        .arg("--no-build") // Already built in Phase 4
+        .arg("--output-binary")
+        .arg(&output_path)  // ← CALLER SPECIFIES PATH
+        .arg("--no-build")
         .output()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
             reason: e.to_string(),
         }))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-            command: format!("bundle_{}", platform),
-            reason: format!("Bundling failed:\n{}", stderr),
-        }));
-    }
-
-    // Construct expected artifact path based on platform
-    let artifact_path = construct_artifact_path(ctx, platform)?;
-
-    // Verify artifact exists
-    if !artifact_path.exists() {
-        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-            command: format!("bundle_{}", platform),
-            reason: format!("Artifact not found: {}", artifact_path.display()),
-        }));
-    }
-
-    ctx.config.indent(&format!("✓ {}", artifact_path.file_name().unwrap().to_string_lossy()));
-
-    Ok(vec![artifact_path])
-}
-
-/// Construct expected artifact path based on platform and naming conventions
-fn construct_artifact_path(ctx: &ReleasePhaseContext<'_>, platform: &str) -> Result<std::path::PathBuf> {
-    let target_dir = ctx.temp_dir.join("target/release");
-    let product_name = &ctx.metadata.name;
-    let version = ctx.new_version.to_string();
     
-    let path = match platform {
-        "dmg" => {
-            // DMG: {target}/bundle/dmg/{ProductName}-{Version}.dmg
-            target_dir.join("bundle/dmg").join(format!("{}-{}.dmg", product_name, version))
-        }
-        "macos-bundle" | "app" => {
-            // macOS App: {target}/bundle/macos/{ProductName}.app
-            target_dir.join("bundle/macos").join(format!("{}.app", product_name))
-        }
-        "deb" => {
-            // Debian: {target}/bundle/deb/{product}_{version}_{arch}.deb
-            // TODO: Get actual arch from settings, defaulting to amd64
-            target_dir.join("bundle/deb").join(format!("{}_{}_amd64.deb", product_name, version))
-        }
-        "rpm" => {
-            // RPM: {target}/bundle/rpm/{product}-{version}-{release}.{arch}.rpm
-            // TODO: Get actual release and arch from settings, defaulting to 1.x86_64
-            target_dir.join("bundle/rpm").join(format!("{}-{}-1.x86_64.rpm", product_name, version))
-        }
-        "nsis" | "exe" => {
-            // NSIS: {target}/bundle/nsis/{product}_{version}_{arch}-setup.exe
-            // TODO: Get actual arch from settings, defaulting to x86
-            target_dir.join("bundle/nsis").join(format!("{}_{}_x86-setup.exe", product_name, version))
-        }
-        _ => {
-            return Err(ReleaseError::Cli(CliError::InvalidArguments {
-                reason: format!("Unknown platform: {}", platform),
-            }));
-        }
-    };
-
-    Ok(path)
+    // Capture stdout and stderr for diagnostics
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    
+    if ctx.config.is_verbose() && !stdout.is_empty() {
+        ctx.config.verbose_println(&format!("   Bundler stdout:\n{}", stdout));
+    }
+    
+    if !stderr.is_empty() {
+        ctx.config.verbose_println(&format!("   Bundler stderr:\n{}", stderr));
+    }
+    
+    if !output.status.success() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: format!("Docker bundling failed (exit code {:?}):\n{}", output.status.code(), stderr),
+        }));
+    }
+    
+    // Contract enforcement: exit code 0 means artifact exists at output_path
+    if !output_path.exists() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: format!("bundle_{}", platform),
+            reason: format!(
+                "Bundler exit code 0 but artifact not found at {}.\n\
+                 This is a contract violation in the bundler.",
+                output_path.display()
+            ),
+        }));
+    }
+    
+    ctx.config.indent(&format!("✓ {}", filename));
+    
+    Ok(vec![output_path])
 }

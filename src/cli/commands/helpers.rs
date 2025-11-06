@@ -2,6 +2,7 @@
 
 use crate::error::{CliError, ReleaseError, Result};
 use crate::git::GitManager;
+use gix::bstr::{BStr, ByteSlice};
 
 /// Parse GitHub repository string into owner/repo tuple
 #[allow(dead_code)]
@@ -40,32 +41,48 @@ pub(super) fn parse_github_repo_string(repo_str: &str) -> Result<(String, String
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
-/// Parse GitHub owner/repo from git remote URL
-/// Supports: git@github.com:owner/repo.git and https://github.com/owner/repo.git
-pub(super) fn parse_github_url(url: &str) -> Option<(String, String)> {
-    // Handle git@github.com:owner/repo.git (with or without leading slash)
-    if let Some(ssh_part) = url.strip_prefix("git@github.com:") {
-        // Remove leading slash if present (malformed URL like git@github.com:/owner/repo)
-        let ssh_part = ssh_part.strip_prefix('/').unwrap_or(ssh_part);
-        let repo_part = ssh_part.strip_suffix(".git").unwrap_or(ssh_part);
-        let parts: Vec<&str> = repo_part.split('/').collect();
-        if parts.len() == 2 {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
+/// Parse GitHub owner/repo from git remote URL using proper URL parsing
+/// 
+/// Supports all Git URL formats:
+/// - SSH SCP-like: git@github.com:owner/repo.git
+/// - SSH protocol: ssh://git@github.com/owner/repo.git
+/// - HTTPS: https://github.com/owner/repo.git
+/// - HTTP: http://github.com/owner/repo.git
+/// - With ports: ssh://git@github.com:2222/owner/repo.git
+/// - Enterprise: git@github.company.com:owner/repo.git
+/// 
+/// Returns (owner, repo) tuple or error with context about what failed.
+pub(super) fn parse_github_url(url: &str) -> Result<(String, String)> {
+    // Parse URL using gix-url for robust handling of all Git URL formats
+    let parsed_url = gix_url::parse(BStr::new(url.as_bytes()))
+        .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments {
+            reason: format!("Failed to parse Git URL '{}': {}", url, e),
+        }))?;
+    
+    // Extract path component (e.g., "/owner/repo.git" or "owner/repo.git")
+    let path = parsed_url.path.to_str_lossy();
+    
+    // Remove leading slash if present
+    let path = path.strip_prefix('/').unwrap_or(&path);
+    
+    // Remove .git suffix if present
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    
+    // Split by / and extract owner/repo
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    
+    if parts.len() < 2 {
+        return Err(ReleaseError::Cli(CliError::InvalidArguments {
+            reason: format!(
+                "Git URL does not contain owner/repo path: '{}' (parsed path: '{}')",
+                url, path
+            ),
+        }));
     }
-
-    // Handle https://github.com/owner/repo.git
-    if url.contains("github.com/")
-        && let Some(path) = url.split("github.com/").nth(1)
-    {
-        let repo_part = path.strip_suffix(".git").unwrap_or(path);
-        let parts: Vec<&str> = repo_part.split('/').collect();
-        if parts.len() >= 2 {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-    }
-
-    None
+    
+    // Take first two non-empty segments as owner/repo
+    // This handles both "owner/repo" and "owner/subgroup/repo" cases
+    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 /// Detect GitHub repo from git remote origin using GitManager
@@ -82,14 +99,7 @@ pub(super) async fn detect_github_repo(git_manager: &GitManager) -> Result<(Stri
     })?;
 
     // Parse GitHub URL from origin
-    parse_github_url(&origin.fetch_url).ok_or_else(|| {
-        ReleaseError::Cli(CliError::InvalidArguments {
-            reason: format!(
-                "Origin remote is not a GitHub repository: {}",
-                origin.fetch_url
-            ),
-        })
-    })
+    parse_github_url(&origin.fetch_url)
 }
 
 

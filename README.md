@@ -85,7 +85,6 @@ When you run a release command, the tool:
 - **DMG (.dmg)** - macOS disk image installer
 
 #### Windows Packages
-- **MSI (.msi)** - Windows Installer via WiX Toolset
 - **NSIS (.exe)** - Lightweight installer via NSIS
 
 ## Usage Examples
@@ -127,7 +126,6 @@ kodegen_bundler_release bundle
 # Bundle specific platform
 kodegen_bundler_release bundle --platform deb
 kodegen_bundler_release bundle --platform dmg
-kodegen_bundler_release bundle --platform msi
 
 # Bundle without rebuilding binaries
 kodegen_bundler_release bundle --no-build
@@ -226,7 +224,7 @@ requires = ["glibc"]
 - **Platform-specific tools**:
   - **Linux**: dpkg-dev, rpm, fakeroot
   - **macOS**: Xcode Command Line Tools
-  - **Windows**: WiX Toolset, NSIS
+  - **Windows**: NSIS
 
 ### Build Commands
 
@@ -249,11 +247,11 @@ cargo clippy -- -D warnings
 For creating Linux/Windows bundles from macOS (or vice versa), use Docker:
 
 ```bash
-# Build Docker image (includes Wine, WiX, NSIS)
-kodegen_bundler_release bundle --platform msi --rebuild-image
+# Build Docker image (includes Wine, NSIS)
+kodegen_bundler_release bundle --rebuild-image
 
-# Create Windows MSI from Linux/macOS
-kodegen_bundler_release bundle --platform msi
+# Create Windows NSIS installer from Linux/macOS
+kodegen_bundler_release bundle --platform nsis
 
 # Create Linux packages from macOS
 kodegen_bundler_release bundle --platform deb
@@ -307,6 +305,97 @@ Version updates preserve your `Cargo.toml` formatting using `toml_edit`:
 - Whitespace unchanged
 - Only version fields modified
 
+### Bundler Integration Contract
+
+The release workflow integrates with `kodegen-bundler-bundle` via a **strict contract** that guarantees artifact location and existence.
+
+#### Architecture Detection
+
+The release workflow detects the target architecture at **compile time** using Rust's `cfg` attributes:
+
+```rust
+#[cfg(target_os = "macos")]
+#[cfg(target_arch = "aarch64")]
+return Ok("arm64");  // macOS ARM64
+
+#[cfg(target_os = "linux")]
+#[cfg(target_arch = "x86_64")]
+return Ok("amd64");  // Linux x86_64
+```
+
+This ensures the correct architecture is always used for artifact naming, even during cross-compilation.
+
+#### Output Path Construction
+
+The release workflow constructs the **complete output path** including architecture:
+
+```rust
+// Detect actual target architecture
+let arch = detect_target_architecture()?;  // "arm64", "amd64", etc.
+
+// Construct filename with explicit architecture
+let filename = format!("kodegen_{}_{}.deb", version, arch);
+let output_path = temp_dir.join("artifacts").join(&filename);
+```
+
+**Example filenames:**
+- `kodegen_2.0.0_arm64.deb` (Debian ARM64)
+- `kodegen_2.0.0_amd64.deb` (Debian x86_64)
+- `kodegen-2.0.0-arm64.dmg` (macOS ARM64)
+- `kodegen_2.0.0_x64_setup.exe` (Windows x64)
+
+#### Contract Enforcement
+
+The release workflow passes the full path to the bundler and enforces the contract:
+
+```rust
+let output = Command::new("kodegen_bundler_bundle")
+    .arg("--repo-path").arg(temp_dir)
+    .arg("--platform").arg("deb")
+    .arg("--binary-name").arg("kodegen")
+    .arg("--version").arg("2.0.0")
+    .arg("--output-binary").arg(&output_path)  // ← Contract: bundler puts artifact HERE
+    .arg("--no-build")
+    .output()?;
+
+// Check exit code
+if !output.status.success() {
+    return Err("Bundler failed");
+}
+
+// Contract verification: exit code 0 means file MUST exist
+if !output_path.exists() {
+    return Err("Bundler contract violation: exit 0 but artifact not found");
+}
+
+// File is guaranteed to exist at output_path
+```
+
+#### Bundler Responsibilities
+
+When called with `--output-binary`, the bundler **guarantees**:
+
+1. **Directory creation**: All parent directories in the path are created
+2. **Artifact movement**: The artifact is moved (not copied) to the exact specified path
+3. **Existence verification**: File existence is verified before returning
+4. **Exit code contract**: Exit code 0 means file **guaranteed** to exist at specified path
+
+#### Why This Design?
+
+This contract-based design provides:
+
+- **No path guessing**: Release workflow specifies exact paths, bundler complies
+- **Architecture correctness**: Compile-time detection prevents mismatch
+- **Robust verification**: Exit code enforcement prevents silent failures
+- **Future-proof**: New architectures work without bundler code changes
+- **Clear responsibility**: Release owns naming, bundler owns creation and movement
+
+#### Communication Protocol
+
+- **Exit codes**: Contractual (0 = success with file at specified location)
+- **stdout**: Diagnostic only (human-readable progress, not for parsing)
+- **stderr**: Diagnostic only (error details, not for contract verification)
+
 ## Troubleshooting
 
 ### "Binary not found in target/release"
@@ -352,7 +441,7 @@ echo $APPLE_CERTIFICATE | base64 -d | openssl pkcs12 -info -nodes -passin pass:$
 **Solution**: Increase Docker memory limit:
 
 ```bash
-kodegen_bundler_release bundle --platform msi --docker-memory 4096
+kodegen_bundler_release bundle --platform nsis --docker-memory 4096
 ```
 
 ## Development

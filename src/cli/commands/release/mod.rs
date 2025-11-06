@@ -67,7 +67,17 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
     };
     let temp_dir_pathbuf = temp_dir.to_path_buf();
 
-
+    // Clean up any stale tracking from crashed previous releases
+    match super::temp_clone::cleanup_stale_tracking() {
+        Ok(count) if count > 0 => {
+            config.verbose_println(&format!("✓ Cleaned up {} stale release(s)", count));
+        }
+        Ok(_) => {}, // No stale releases
+        Err(e) => {
+            config.verbose_println(&format!("⚠ Warning: Failed to clean stale tracking: {}", e));
+            // Non-fatal - continue with release
+        }
+    }
 
     // 5. Build release options (simplified)
     let options = ReleaseOptions {
