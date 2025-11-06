@@ -32,7 +32,7 @@ pub async fn load_release_state() -> Result<LoadStateResult> {
 }
 
 /// Save release state to default location
-pub async fn save_release_state(state: &ReleaseState) -> Result<SaveStateResult> {
+pub async fn save_release_state(state: &mut ReleaseState) -> Result<SaveStateResult> {
     let mut manager = create_state_manager()?;
     manager.save_state(state).await
 }

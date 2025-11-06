@@ -190,7 +190,7 @@ impl StateManager {
     ///
     /// Uses version checking to detect concurrent modifications (TOCTTOU protection).
     /// This provides defense-in-depth even if file locks fail (see task 004).
-    pub async fn save_state(&mut self, state: &ReleaseState) -> Result<SaveStateResult> {
+    pub async fn save_state(&mut self, state: &mut ReleaseState) -> Result<SaveStateResult> {
         let start_time = SystemTime::now();
 
         // Acquire lock (primary defense)
@@ -271,6 +271,11 @@ impl StateManager {
             .unwrap_or(0);
 
         let save_duration = start_time.elapsed().unwrap_or_default();
+
+        // Update the original state's save_version to keep it synchronized with disk
+        // This prevents false concurrent modification errors on subsequent saves
+        state.save_version = state_to_save.save_version;
+        state.updated_at = state_to_save.updated_at;
 
         Ok(SaveStateResult {
             success: true,
