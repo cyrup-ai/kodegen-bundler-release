@@ -823,10 +823,6 @@ pub(super) async fn perform_release_single_repo(
             config.println("");
             config.error_println(&format!("❌ Release failed after retries: {}", e));
             config.println("");
-            config.println("ℹ️  This appears to be a transient error (network, timeout, etc.)");
-            config.println("ℹ️  Retrying the release command may succeed.");
-            config.println("ℹ️  No cleanup performed - partial artifacts may exist.");
-            config.println("");
             Err(e)
         }
     }
