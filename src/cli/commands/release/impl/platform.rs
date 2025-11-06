@@ -4,11 +4,11 @@ use crate::error::{CliError, ReleaseError, Result};
 
 use super::context::ReleasePhaseContext;
 
-/// Get all platforms to build based on current OS
+/// Get all platforms to build for release
 pub fn get_platforms_to_build() -> Vec<&'static str> {
-    // Build all platforms by default
-    // Native platforms will be built directly, others via Docker
-    vec!["deb", "rpm", "appimage", "dmg", "app", "nsis"]
+    // Return all supported platforms
+    // The bundler will automatically use Docker for cross-platform builds
+    vec!["deb", "rpm", "appimage", "dmg", "nsis"]
 }
 
 /// Get platforms that can be built natively on current OS
@@ -36,7 +36,7 @@ pub fn get_docker_platforms<'a>(all_platforms: &'a [&'a str]) -> Vec<&'a str> {
 pub fn is_native_platform(platform: &str) -> bool {
     match (std::env::consts::OS, platform) {
         // macOS native packages
-        ("macos", "dmg" | "app") => true,
+        ("macos", "dmg") => true,
 
         // Linux native packages  
         ("linux", "deb" | "rpm" | "appimage") => true,
@@ -111,7 +111,6 @@ pub fn construct_output_filename(
         "deb" => format!("{}_{}_{}.deb", product_name, version, arch),
         "rpm" => format!("{}-{}-1.{}.rpm", product_name, version, arch),
         "dmg" => format!("{}-{}-{}.dmg", product_name, version, arch),
-        "app" | "macos-bundle" => format!("{}.app", product_name),
         "nsis" | "exe" => format!("{}_{}_{}_setup.exe", product_name, version, arch),
         "appimage" => format!("{}-{}-{}.AppImage", product_name, version, arch),
         _ => {

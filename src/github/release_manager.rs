@@ -432,7 +432,6 @@ fn detect_bundle_content_type(path: &std::path::Path) -> &'static str {
         Some("rpm") => "application/x-rpm",
         Some("exe") => "application/x-msdownload",
         Some("dmg") => "application/x-apple-diskimage",
-        Some("app") => "application/x-apple-bundle",
         Some("AppImage") => "application/x-executable",
         Some("zip") => "application/zip",
         Some("tar") | Some("gz") | Some("tgz") => "application/gzip",
@@ -456,7 +455,7 @@ fn create_artifact_label(filename: &str) -> String {
         "Debian/Ubuntu"
     } else if filename.contains("rpm") {
         "RedHat/Fedora"
-    } else if filename.contains("dmg") || filename.contains(".app") {
+    } else if filename.contains("dmg") {
         "macOS"
     } else if filename.contains(".exe") {
         "Windows"

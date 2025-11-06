@@ -81,7 +81,6 @@ When you run a release command, the tool:
 - **AppImage (.AppImage)** - Portable, self-contained executables
 
 #### macOS Packages
-- **App Bundle (.app)** - macOS application bundle
 - **DMG (.dmg)** - macOS disk image installer
 
 #### Windows Packages
