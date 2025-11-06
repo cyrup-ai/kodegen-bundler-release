@@ -934,34 +934,20 @@ async fn bundle_native_platform(
         }));
     }
 
-    // Parse artifact paths from stdout (one per line)
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let artifacts: Vec<std::path::PathBuf> = stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .collect();
+    // Construct expected artifact path based on platform
+    let artifact_path = construct_artifact_path(ctx, platform)?;
 
-    if artifacts.is_empty() {
+    // Verify artifact exists
+    if !artifact_path.exists() {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
-            reason: "No artifacts produced".to_string(),
+            reason: format!("Artifact not found: {}", artifact_path.display()),
         }));
     }
 
-    // Verify artifacts exist
-    for artifact in &artifacts {
-        if !artifact.exists() {
-            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-                command: format!("bundle_{}", platform),
-                reason: format!("Artifact not found: {}", artifact.display()),
-            }));
-        }
+    ctx.config.indent(&format!("✓ {}", artifact_path.file_name().unwrap().to_string_lossy()));
 
-        ctx.config.indent(&format!("✓ {}", artifact.file_name().unwrap().to_string_lossy()));
-    }
-
-    Ok(artifacts)
+    Ok(vec![artifact_path])
 }
 
 /// Bundle a single platform using Docker (via bundler binary)
@@ -998,32 +984,58 @@ async fn bundle_docker_platform(
         }));
     }
 
-    // Parse artifact paths from stdout (one per line)
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let artifacts: Vec<std::path::PathBuf> = stdout
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .collect();
+    // Construct expected artifact path based on platform
+    let artifact_path = construct_artifact_path(ctx, platform)?;
 
-    if artifacts.is_empty() {
+    // Verify artifact exists
+    if !artifact_path.exists() {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
-            reason: "No artifacts produced".to_string(),
+            reason: format!("Artifact not found: {}", artifact_path.display()),
         }));
     }
 
-    // Verify artifacts exist
-    for artifact in &artifacts {
-        if !artifact.exists() {
-            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-                command: format!("bundle_{}", platform),
-                reason: format!("Artifact not found: {}", artifact.display()),
+    ctx.config.indent(&format!("✓ {}", artifact_path.file_name().unwrap().to_string_lossy()));
+
+    Ok(vec![artifact_path])
+}
+
+/// Construct expected artifact path based on platform and naming conventions
+fn construct_artifact_path(ctx: &ReleasePhaseContext<'_>, platform: &str) -> Result<std::path::PathBuf> {
+    let target_dir = ctx.temp_dir.join("target/release");
+    let product_name = &ctx.metadata.name;
+    let version = ctx.new_version.to_string();
+    
+    let path = match platform {
+        "dmg" => {
+            // DMG: {target}/bundle/dmg/{ProductName}-{Version}.dmg
+            target_dir.join("bundle/dmg").join(format!("{}-{}.dmg", product_name, version))
+        }
+        "macos-bundle" | "app" => {
+            // macOS App: {target}/bundle/macos/{ProductName}.app
+            target_dir.join("bundle/macos").join(format!("{}.app", product_name))
+        }
+        "deb" => {
+            // Debian: {target}/bundle/deb/{product}_{version}_{arch}.deb
+            // TODO: Get actual arch from settings, defaulting to amd64
+            target_dir.join("bundle/deb").join(format!("{}_{}_amd64.deb", product_name, version))
+        }
+        "rpm" => {
+            // RPM: {target}/bundle/rpm/{product}-{version}-{release}.{arch}.rpm
+            // TODO: Get actual release and arch from settings, defaulting to 1.x86_64
+            target_dir.join("bundle/rpm").join(format!("{}-{}-1.x86_64.rpm", product_name, version))
+        }
+        "nsis" | "exe" => {
+            // NSIS: {target}/bundle/nsis/{product}_{version}_{arch}-setup.exe
+            // TODO: Get actual arch from settings, defaulting to x86
+            target_dir.join("bundle/nsis").join(format!("{}_{}_x86-setup.exe", product_name, version))
+        }
+        _ => {
+            return Err(ReleaseError::Cli(CliError::InvalidArguments {
+                reason: format!("Unknown platform: {}", platform),
             }));
         }
+    };
 
-        ctx.config.indent(&format!("✓ {}", artifact.file_name().unwrap().to_string_lossy()));
-    }
-
-    Ok(artifacts)
+    Ok(path)
 }
