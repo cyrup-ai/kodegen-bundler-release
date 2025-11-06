@@ -13,11 +13,12 @@ pub use commands::execute_command;
 pub use output::OutputManager;
 
 use crate::error::Result;
+use crate::EnvConfig;
 
 /// Main CLI entry point
-pub async fn run() -> Result<i32> {
+pub async fn run(env_config: EnvConfig) -> Result<i32> {
     let args = Args::parse_args();
-    execute_command(args).await
+    execute_command(args, env_config).await
 }
 
 /// Parse arguments without executing (for testing)

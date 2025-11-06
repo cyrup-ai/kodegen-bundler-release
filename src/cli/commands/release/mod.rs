@@ -7,6 +7,7 @@ mod r#impl;
 
 use crate::cli::{Args, RuntimeConfig};
 use crate::error::{CliError, ReleaseError, Result};
+use crate::EnvConfig;
 
 /// Options for configuring the release process
 #[derive(Clone)]
@@ -21,7 +22,11 @@ pub(super) struct ReleaseOptions {
 
 
 /// Execute release command
-pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Result<i32> {
+pub(super) async fn execute_release(
+    args: &Args,
+    config: &RuntimeConfig,
+    env_config: &EnvConfig,
+) -> Result<i32> {
     // 1. Parse and resolve repository source
     config.println("📦 Resolving repository source...");
     let source_parsed = crate::source::RepositorySource::parse(&args.source)?;
@@ -99,7 +104,8 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
         metadata,
         binary_name,
         config,
-        &options
+        &options,
+        env_config,
     ).await;
 
     // 7. Cleanup temp directory

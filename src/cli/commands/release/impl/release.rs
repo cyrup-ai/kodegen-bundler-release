@@ -63,11 +63,11 @@ pub async fn perform_release_single_repo(
     
     config.success_println(&format!("✓ v{} → v{} ({})", current_version, new_version, version_bump));
     
-    // Update Cargo.toml with new version
-    crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
+    // Update Cargo.toml with new version and get parsed content for verification
+    let parsed_toml = crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
 
-    // VERIFY: Read back and confirm version matches
-    verify_version_update(&cargo_toml_path, &new_version)?;
+    // VERIFY: Confirm version matches using in-memory parsed content (no redundant file read)
+    verify_version_in_parsed_toml(&cargo_toml_path, &parsed_toml, &new_version)?;
 
     // Update Cargo.lock to match new version
     update_cargo_lock(temp_dir, &new_version).await?;
@@ -253,7 +253,11 @@ fn create_new_release_state(
     ))
 }
 
-/// Verify that the version was correctly written to Cargo.toml
+/// Verify that the version was correctly written to Cargo.toml (DEPRECATED: use verify_version_in_parsed_toml)
+///
+/// This function reads the file from disk for verification. For better performance,
+/// use verify_version_in_parsed_toml() with the toml::Value returned from update_single_toml().
+#[allow(dead_code)]
 fn verify_version_update(cargo_toml_path: &std::path::Path, new_version: &semver::Version) -> Result<()> {
     let verification_content = std::fs::read_to_string(cargo_toml_path)
         .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
@@ -268,6 +272,37 @@ fn verify_version_update(cargo_toml_path: &std::path::Path, new_version: &semver
         }))?;
 
     let written_version = verification_parsed
+        .get("package")
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.to_path_buf(),
+            reason: "Version field missing after update".to_string(),
+        }))?;
+
+    if written_version != new_version.to_string() {
+        return Err(ReleaseError::Version(crate::error::VersionError::VerificationFailed {
+            path: cargo_toml_path.to_path_buf(),
+            reason: format!(
+                "Version mismatch: expected {}, found {}",
+                new_version, written_version
+            ),
+        }));
+    }
+
+    Ok(())
+}
+
+/// Verify version in parsed TOML content without re-reading the file.
+///
+/// This function performs in-memory verification using the toml::Value
+/// returned from update_single_toml(), eliminating redundant disk I/O.
+fn verify_version_in_parsed_toml(
+    cargo_toml_path: &std::path::Path,
+    parsed_toml: &toml::Value,
+    new_version: &semver::Version,
+) -> Result<()> {
+    let written_version = parsed_toml
         .get("package")
         .and_then(|p| p.get("version"))
         .and_then(|v| v.as_str())

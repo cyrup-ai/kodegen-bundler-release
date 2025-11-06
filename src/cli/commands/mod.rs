@@ -10,12 +10,13 @@ mod temp_clone;
 
 use crate::cli::{Args, RuntimeConfig};
 use crate::error::Result;
+use crate::EnvConfig;
 
 // Import command executors
 use release::execute_release;
 
 /// Execute the main command based on parsed arguments
-pub async fn execute_command(args: Args) -> Result<i32> {
+pub async fn execute_command(args: Args, env_config: EnvConfig) -> Result<i32> {
     // Validate arguments
     if let Err(validation_error) = args.validate() {
         let output = super::OutputManager::new(false, false);
@@ -26,7 +27,7 @@ pub async fn execute_command(args: Args) -> Result<i32> {
     let config = RuntimeConfig::from(&args);
 
     // Execute release command
-    let result = execute_release(&args, &config).await;
+    let result = execute_release(&args, &config, &env_config).await;
 
     match result {
         Ok(exit_code) => {
