@@ -285,6 +285,7 @@ impl ReleaseState {
 
         Self {
             format_version: STATE_FORMAT_VERSION,
+            save_version: 0,
             release_id,
             target_version,
             version_bump,

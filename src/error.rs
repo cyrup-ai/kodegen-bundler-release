@@ -334,6 +334,15 @@ pub enum StateError {
         found: String,
     },
 
+    /// Concurrent modification detected (TOCTTOU protection)
+    #[error("Concurrent modification detected: state was modified by another process (expected save_version {expected}, found {found})")]
+    ConcurrentModification {
+        /// Expected save_version from our in-memory state
+        expected: u64,
+        /// Actual save_version found on disk
+        found: u64,
+    },
+
     /// Failed to save state
     #[error("Failed to save state: {reason}")]
     SaveFailed {

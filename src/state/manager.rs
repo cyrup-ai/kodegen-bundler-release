@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, System};
 
 /// State manager for persistent release state
 #[derive(Debug)]
@@ -63,11 +64,55 @@ struct FileLock {
     _acquired_at: SystemTime,
     /// Platform-specific lock storage
     /// On Unix: RAII Flock guard that auto-unlocks on drop
-    /// On other platforms: File handle that holds the lock
+    /// On Windows: File handle with manual unlock tracking
+    /// On other platforms: File handle (best-effort locking)
     #[cfg(unix)]
     _lock_guard: nix::fcntl::Flock<std::fs::File>,
     #[cfg(not(unix))]
     _lock_handle: std::fs::File,
+    /// Track whether Windows lock is active (Windows only)
+    #[cfg(windows)]
+    _is_locked: bool,
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            if self._is_locked {
+                use std::os::windows::io::AsRawHandle;
+                use windows::Win32::Foundation::HANDLE;
+                use windows::Win32::Storage::FileSystem::UnlockFileEx;
+                use windows::Win32::System::IO::OVERLAPPED;
+
+                let raw_handle = self._lock_handle.as_raw_handle();
+                let handle = HANDLE(raw_handle as isize);
+                let mut overlapped = OVERLAPPED::default();
+
+                // Explicitly unlock the file region
+                // SAFETY:
+                // - handle is valid because it comes from the owned File in _lock_handle
+                // - overlapped is correctly initialized (same as LockFileEx call)
+                // - We're unlocking the same region (offset 0, length u32::MAX)
+                unsafe {
+                    let _ = UnlockFileEx(
+                        handle,
+                        0,        // Reserved (must be 0)
+                        u32::MAX, // nNumberOfBytesToUnlockLow (matches LockFileEx)
+                        u32::MAX, // nNumberOfBytesToUnlockHigh (matches LockFileEx)
+                        &mut overlapped,
+                    );
+                    // Note: We ignore errors here because:
+                    // 1. Drop cannot return errors
+                    // 2. The file handle will be closed anyway when _lock_handle drops
+                    // 3. Explicit unlock is defense-in-depth
+                }
+            }
+        }
+
+        // File handle (_lock_handle or _lock_guard) drops automatically after this,
+        // closing the underlying OS file descriptor/handle
+    }
 }
 
 /// Error type for lock acquisition (Unix only)
@@ -141,21 +186,55 @@ impl StateManager {
         })
     }
 
-    /// Save release state to file
+    /// Save release state to file with optimistic concurrency control
+    ///
+    /// Uses version checking to detect concurrent modifications (TOCTTOU protection).
+    /// This provides defense-in-depth even if file locks fail (see task 004).
     pub async fn save_state(&mut self, state: &ReleaseState) -> Result<SaveStateResult> {
         let start_time = SystemTime::now();
 
-        // Acquire lock
+        // Acquire lock (primary defense)
         self.acquire_lock().await?;
+
+        // TOCTTOU Protection: Read current version from disk (secondary defense)
+        // This detects concurrent modifications even if lock acquisition had bugs
+        let current_version = if self.state_file_path.exists() {
+            match self.load_from_file(&self.state_file_path) {
+                Ok(loaded) => loaded.save_version,
+                Err(_) => {
+                    // File exists but corrupted/unreadable - treat as version 0
+                    // Allow overwrite since we can't read current version
+                    0
+                }
+            }
+        } else {
+            // File doesn't exist yet - start at version 0
+            0
+        };
+
+        // Verify we're not clobbering a newer version
+        // Allow state.save_version == current_version (for first save of new state)
+        if state.save_version < current_version {
+            return Err(StateError::ConcurrentModification {
+                expected: state.save_version,
+                found: current_version,
+            }
+            .into());
+        }
 
         // Validate state before saving
         if self.config.validate_on_load {
             state.validate()?;
         }
 
-        // Serialize state
-        let serialized =
-            serde_json::to_string_pretty(state).map_err(|e| StateError::SaveFailed {
+        // Create new state with incremented version
+        let mut state_to_save = state.clone();
+        state_to_save.save_version = current_version + 1;
+        state_to_save.updated_at = chrono::Utc::now();
+
+        // Serialize state with new version
+        let serialized = serde_json::to_string_pretty(&state_to_save)
+            .map_err(|e| StateError::SaveFailed {
                 reason: format!("Failed to serialize state: {}", e),
             })?;
 
@@ -163,8 +242,8 @@ impl StateManager {
         let temp_file_path = self.state_file_path.with_extension("tmp");
 
         {
-            let mut file =
-                fs::File::create(&temp_file_path).map_err(|e| StateError::SaveFailed {
+            let mut file = fs::File::create(&temp_file_path)
+                .map_err(|e| StateError::SaveFailed {
                     reason: format!("Failed to create temp file: {}", e),
                 })?;
 
@@ -173,15 +252,18 @@ impl StateManager {
                     reason: format!("Failed to write state: {}", e),
                 })?;
 
-            file.sync_all().map_err(|e| StateError::SaveFailed {
-                reason: format!("Failed to sync file: {}", e),
-            })?;
+            file.sync_all()
+                .map_err(|e| StateError::SaveFailed {
+                    reason: format!("Failed to sync file: {}", e),
+                })?;
         }
 
-        // Atomic rename
-        fs::rename(&temp_file_path, &self.state_file_path).map_err(|e| StateError::SaveFailed {
-            reason: format!("Failed to rename temp file: {}", e),
-        })?;
+        // Atomic rename (third-party process could theoretically read old file here,
+        // but version check on next save will catch any corruption)
+        fs::rename(&temp_file_path, &self.state_file_path)
+            .map_err(|e| StateError::SaveFailed {
+                reason: format!("Failed to rename temp file: {}", e),
+            })?;
 
         // Get file size
         let file_size_bytes = fs::metadata(&self.state_file_path)
@@ -308,15 +390,58 @@ impl StateManager {
         }
     }
 
+    /// Check if existing lock file is stale (process no longer exists)
+    ///
+    /// Returns:
+    /// - `Ok(true)` if lock file exists but process is dead (safe to remove)
+    /// - `Ok(false)` if no lock file, or lock is held by living process
+    /// - Conservative: returns `Ok(false)` on any read/parse errors
+    fn is_lock_stale(&self) -> Result<bool> {
+        // No lock file = not stale
+        if !self.lock_file_path.exists() {
+            return Ok(false);
+        }
+        
+        // Try to read lock file
+        let content = match fs::read_to_string(&self.lock_file_path) {
+            Ok(c) => c,
+            Err(_) => return Ok(false),  // Can't read = assume valid (conservative)
+        };
+        
+        // Parse JSON to extract PID
+        let lock_data: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(d) => d,
+            Err(_) => return Ok(false),  // Can't parse = assume valid
+        };
+        
+        let pid = match lock_data["pid"].as_u64() {
+            Some(p) => p as u32,
+            None => return Ok(false),  // No PID field = assume valid
+        };
+        
+        // Check if process exists using sysinfo (cross-platform)
+        // Pattern from temp_clone.rs:256-286
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        
+        let process_exists = sys.process(Pid::from_u32(pid)).is_some();
+        
+        // Stale if process doesn't exist
+        Ok(!process_exists)
+    }
+
     /// Force remove lock (use with caution)
     pub fn force_unlock(&mut self) -> Result<()> {
+        // Drop existing lock (triggers FileLock::drop which calls UnlockFileEx on Windows)
+        self.lock_handle = None;
+
+        // Remove lock metadata file
         if self.lock_file_path.exists() {
             fs::remove_file(&self.lock_file_path).map_err(|e| StateError::SaveFailed {
                 reason: format!("Failed to remove lock file: {}", e),
             })?;
         }
 
-        self.lock_handle = None;
         Ok(())
     }
 
@@ -356,6 +481,12 @@ impl StateManager {
                     reason: "Timeout waiting for file lock".to_string(),
                 }
                 .into());
+            }
+
+            // Check for stale locks before attempting acquisition
+            if self.lock_file_path.exists() && self.is_lock_stale()? {
+                // Lock is stale - safe to remove
+                let _ = fs::remove_file(&self.lock_file_path);
             }
 
             // Step 1: Open or create lock file
@@ -441,6 +572,7 @@ impl StateManager {
                             _pid: std::process::id(),
                             _acquired_at: SystemTime::now(),
                             _lock_handle: file,
+                            _is_locked: true,
                         });
 
                         return Ok(());
