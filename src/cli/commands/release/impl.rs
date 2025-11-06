@@ -262,8 +262,109 @@ async fn execute_phases_with_retry(
         release_id
     };
     
-    // TODO: Phase 4-6 (Build, Bundle, Upload) will be replaced with:
-    // Execute cargo run -p kodegen_bundler_bundle -- bundle ...
+    // ===== PHASE 4: BUILD RELEASE BINARIES =====
+    ctx.config.println("🔨 Building release binaries...");
+    
+    let build_output = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .current_dir(ctx.temp_dir)
+        .output()
+        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo build --release".to_string(),
+            reason: e.to_string(),
+        }))?;
+    
+    if !build_output.status.success() {
+        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo build --release".to_string(),
+            reason: String::from_utf8_lossy(&build_output.stderr).to_string(),
+        }));
+    }
+    
+    ctx.config.success_println("✓ Built release binaries");
+    
+    // ===== PHASE 5: CREATE PLATFORM BUNDLES =====
+    ctx.config.println("📦 Creating platform bundles...");
+    
+    let platforms = ["deb", "rpm", "dmg", "appimage"];
+    let mut all_artifact_paths: Vec<std::path::PathBuf> = Vec::new();
+    
+    for platform in &platforms {
+        ctx.config.verbose_println(&format!("   Building {} package...", platform));
+        
+        let bundle_output = std::process::Command::new("cargo")
+            .arg("run")
+            .arg("-p")
+            .arg("kodegen_bundler_bundle")
+            .arg("--")
+            .arg("--repo-path")
+            .arg(ctx.temp_dir)
+            .arg("--platform")
+            .arg(platform)
+            .arg("--binary-name")
+            .arg(ctx.binary_name)
+            .arg("--version")
+            .arg(&ctx.new_version.to_string())
+            .arg("--no-build") // Already built in Phase 4
+            .current_dir(ctx.temp_dir)
+            .output()
+            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("bundle {}", platform),
+                reason: e.to_string(),
+            }))?;
+        
+        if !bundle_output.status.success() {
+            ctx.config.warning_println(&format!(
+                "⚠️  Failed to create {} package: {}",
+                platform,
+                String::from_utf8_lossy(&bundle_output.stderr)
+            ));
+            continue; // Skip this platform but continue with others
+        }
+        
+        ctx.config.indent(&format!("✓ Created {} package", platform));
+    }
+    
+    // Collect all generated artifacts from target/release-artifacts/
+    let artifacts_dir = ctx.temp_dir.join("target/release-artifacts");
+    if artifacts_dir.exists() {
+        let artifact_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&artifacts_dir)
+            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "read artifacts directory".to_string(),
+                reason: e.to_string(),
+            }))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        
+        all_artifact_paths.extend(artifact_paths);
+    }
+    
+    ctx.config.success_println(&format!("✓ Created {} artifacts", all_artifact_paths.len()));
+    
+    // ===== PHASE 6: UPLOAD ARTIFACTS TO GITHUB RELEASE =====
+    if !all_artifact_paths.is_empty() {
+        ctx.config.println("☁️  Uploading artifacts to GitHub release...");
+        
+        let uploaded_urls = ctx.github_manager
+            .upload_artifacts(
+                release_id,
+                &all_artifact_paths,
+                ctx.new_version,
+                ctx.config,
+            )
+            .await
+            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "upload artifacts".to_string(),
+                reason: e.to_string(),
+            }))?;
+        
+        ctx.config.success_println(&format!("✓ Uploaded {} artifacts to GitHub", uploaded_urls.len()));
+    } else {
+        ctx.config.warning_println("⚠️  No artifacts created - skipping upload");
+    }
     
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
     if release_state.has_completed(crate::state::ReleasePhase::GitHubPublish) {

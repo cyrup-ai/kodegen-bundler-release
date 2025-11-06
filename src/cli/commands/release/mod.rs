@@ -16,7 +16,6 @@ pub(super) struct ReleaseOptions {
     pub no_push: bool,
     pub registry: Option<String>,
     pub github_repo: Option<String>,
-    pub universal: bool,
 }
 
 
@@ -77,7 +76,6 @@ pub(super) async fn execute_release(args: &Args, config: &RuntimeConfig) -> Resu
         no_push: args.no_push,
         registry: args.registry.clone(),
         github_repo: args.github_repo.clone(),
-        universal: args.universal,
     };
 
     // Provide user feedback for dry-run mode

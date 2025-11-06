@@ -6,7 +6,6 @@ use kodegen_tools_github::{GitHubClient, GitHubReleaseOptions};
 use semver::Version;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 /// Configuration for GitHub releases
 #[derive(Debug, Clone)]
@@ -49,8 +48,6 @@ pub struct GitHubReleaseResult {
     pub draft: bool,
     /// Whether this was a prerelease
     pub prerelease: bool,
-    /// Duration of operation
-    pub duration: Duration,
 }
 
 /// GitHub release manager
@@ -98,11 +95,6 @@ impl GitHubReleaseManager {
         Ok(Self { client, config })
     }
 
-    /// Get reference to the GitHub client
-    pub fn client(&self) -> &GitHubClient {
-        &self.client
-    }
-
     /// Create a GitHub release
     pub async fn create_release(
         &self,
@@ -110,8 +102,6 @@ impl GitHubReleaseManager {
         commit_sha: &str,
         release_notes: Option<String>,
     ) -> Result<GitHubReleaseResult> {
-        let start_time = Instant::now();
-
         let tag_name = format!("v{}", version);
 
         // Determine if this should be a prerelease
@@ -154,7 +144,6 @@ impl GitHubReleaseManager {
             html_url: result.html_url,
             draft: result.draft,
             prerelease: result.prerelease,
-            duration: start_time.elapsed(),
         })
     }
 
@@ -276,35 +265,6 @@ impl GitHubReleaseManager {
     /// - `Ok(false)` - API connection failed (invalid token, network error, or rate limit)
     pub async fn test_connection(&self) -> Result<bool> {
         match self.client.get_me().await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-
-    /// Verify a commit exists in the repository
-    ///
-    /// Calls repos/:owner/:repo/commits/:sha endpoint to verify the commit
-    /// has been pushed to GitHub before creating a release pointing to it.
-    ///
-    /// This prevents creating releases with invalid target_commitish values.
-    ///
-    /// # Arguments
-    /// * `commit_sha` - Full commit SHA (40 characters)
-    ///
-    /// # Returns
-    /// - `Ok(true)` - Commit exists on GitHub
-    /// - `Ok(false)` - Commit not found or network error
-    pub async fn verify_commit_exists(&self, commit_sha: &str) -> Result<bool> {
-        match self.client
-            .get_commit(
-                &self.config.owner,
-                &self.config.repo,
-                commit_sha,
-                None,  // page
-                None,  // per_page
-            )
-            .await
-        {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
         }

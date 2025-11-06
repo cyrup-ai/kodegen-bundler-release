@@ -8,7 +8,7 @@
 use crate::error::{Result, StateError};
 use crate::git::{CommitInfo, PushInfo, TagInfo};
 use crate::publish::PublishResult;
-use crate::version::{UpdateResult, VersionBump};
+use crate::version::VersionBump;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -348,22 +348,7 @@ impl ReleaseState {
         self.updated_at = chrono::Utc::now();
     }
 
-    /// Update version state
-    pub fn set_version_state(&mut self, update_result: &UpdateResult) {
-        self.version_state = Some(VersionState {
-            previous_version: update_result.previous_version.clone(),
-            new_version: update_result.new_version.clone(),
-            update_result: Some(VersionUpdateInfo {
-                packages_updated: update_result.packages_updated,
-                dependencies_updated: update_result.dependencies_updated,
-                duration_ms: 0, // This would need to be tracked separately
-            }),
-            modified_files: update_result.modified_files.clone(),
-            backup_files: Vec::new(), // This would be populated by the version manager
-        });
 
-        self.updated_at = chrono::Utc::now();
-    }
 
     /// Update git state
     pub fn set_git_state(&mut self, commit: Option<&CommitInfo>, tag: Option<&TagInfo>) {
