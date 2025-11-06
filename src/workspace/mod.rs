@@ -8,6 +8,5 @@ mod dependency;
 mod validator;
 
 pub use analyzer::{
-    PackageInfo, SharedWorkspaceInfo, WorkspaceInfo,
+    PackageConfig, PackageInfo, SharedWorkspaceInfo, WorkspaceInfo,
 };
-pub use dependency::{DependencyGraph, PublishTier};

@@ -6,7 +6,9 @@
 use crate::cli::RuntimeConfig;
 use crate::error::{CliError, PublishError, ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
+use crate::publish::{CargoPublisher, PublishConfig};
 use crate::state::ReleaseState;
+use crate::workspace::{PackageConfig, PackageInfo};
 
 use super::super::helpers::{detect_github_repo, parse_github_repo_string};
 use super::ReleaseOptions;
@@ -457,38 +459,82 @@ async fn execute_phases_with_retry(
     } else {
         ctx.config.println("📦 Publishing to crates.io...");
         
-        let publish_result = retry_with_backoff(
-            || async {
-                let output = std::process::Command::new("cargo")
-                    .arg("publish")
-                    .current_dir(ctx.temp_dir)
-                    .output()
-                    .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-                        command: "cargo_publish".to_string(),
-                        reason: e.to_string(),
-                    }))?;
-                
-                if output.status.success() {
-                    Ok(())
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(ReleaseError::Publish(PublishError::PublishFailed {
-                        package: ctx.metadata.name.clone(),
-                        reason: stderr.to_string(),
-                    }))
-                }
-            },
-            ctx.config.retry_config.release_publishing,
-            "Publish to crates.io",
-            ctx.config,
-        ).await;
+        // Create CargoPublisher with configuration from retry_config
+        let publisher = CargoPublisher::with_retry_config(
+            ctx.config.retry_config.release_publishing as usize,
+            std::time::Duration::from_secs(5),  // base delay
+            std::time::Duration::from_secs(300), // 5 min timeout
+        );
         
-        match publish_result {
-            Ok(()) => {
-                ctx.config.success_println(&format!("✓ Published {} v{} to crates.io", ctx.metadata.name, ctx.new_version));
+        // Build PackageInfo from metadata
+        let package_info = PackageInfo {
+            name: ctx.metadata.name.clone(),
+            version: ctx.new_version.to_string(),
+            path: std::path::PathBuf::from("."),
+            absolute_path: ctx.temp_dir.to_path_buf(),
+            cargo_toml_path: ctx.temp_dir.join("Cargo.toml"),
+            config: PackageConfig {
+                name: ctx.metadata.name.clone(),
+                version: toml::Value::String(ctx.new_version.to_string()),
+                edition: None,
+                description: None,
+                license: None,
+                authors: None,
+                homepage: None,
+                repository: None,
+                publish: None,
+                other: std::collections::HashMap::new(),
+            },
+            workspace_dependencies: Vec::new(),
+            all_dependencies: std::collections::HashMap::new(),
+        };
+        
+        // Build PublishConfig from options
+        let publish_config = PublishConfig {
+            registry: ctx.options.registry.clone(),
+            dry_run_first: false,
+            allow_dirty: false,
+            additional_args: vec![],
+            token: None, // Uses cargo login credentials
+        };
+        
+        // Publish using CargoPublisher
+        match publisher.publish_package(&package_info, &publish_config).await {
+            Ok(result) => {
+                // Use structured result for better output
+                ctx.config.success_println(&result.summary());
+                
+                // Display warnings if any
+                if !result.warnings.is_empty() {
+                    for warning in &result.warnings {
+                        ctx.config.warning_println(&format!("  ⚠️  {}", warning));
+                    }
+                }
+                
+                // Log detailed info in verbose mode
+                ctx.config.verbose_println(&format!(
+                    "  Published in {:.2}s with {} retry(ies)",
+                    result.duration.as_secs_f64(),
+                    result.retry_attempts
+                ));
             }
-            Err(_) => {
-                ctx.config.verbose_println("ℹ️  Skipping crates.io publish (may not be a library crate)");
+            Err(e) => {
+                // More informative error handling
+                if let ReleaseError::Publish(ref publish_err) = e {
+                    match publish_err {
+                        PublishError::AlreadyPublished { .. } => {
+                            ctx.config.warning_println(&format!("  ⚠️  {}", e));
+                        }
+                        _ => {
+                            ctx.config.verbose_println(&format!(
+                                "ℹ️  Skipping crates.io publish: {}",
+                                e
+                            ));
+                        }
+                    }
+                } else {
+                    ctx.config.verbose_println("ℹ️  Skipping crates.io publish (may not be a library crate)");
+                }
             }
         }
     }
