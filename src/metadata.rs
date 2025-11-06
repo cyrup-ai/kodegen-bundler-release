@@ -1,7 +1,4 @@
-//! Temporary metadata module for release package.
-//!
-//! This is a minimal replacement for the deleted metadata module.
-//! TODO: This should be replaced with proper metadata handling in the future.
+//! Metadata and binary discovery from Cargo.toml
 
 use crate::error::{ReleaseError, Result};
 use std::path::Path;
@@ -21,37 +18,71 @@ pub struct Manifest {
 
 /// Load manifest from Cargo.toml
 ///
-/// This is a minimal implementation that extracts package name, version, and binary name.
+/// Properly handles [[bin]] sections in Cargo.toml for binary discovery.
+/// Falls back to package name if no [[bin]] sections exist.
 pub fn load_manifest(cargo_toml_path: &Path) -> Result<Manifest> {
-    let content = std::fs::read_to_string(cargo_toml_path)
-        .map_err(ReleaseError::Io)?;
+    // Step 1: Read file once
+    let content = std::fs::read_to_string(cargo_toml_path).map_err(|e| {
+        ReleaseError::Cli(crate::error::CliError::ExecutionFailed {
+            command: "read_cargo_toml".to_string(),
+            reason: format!("Failed to read {}: {}", cargo_toml_path.display(), e),
+        })
+    })?;
 
-    // Parse package name
-    let name = content
-        .lines()
-        .find(|line| line.trim().starts_with("name = "))
-        .and_then(|line| line.split('=').nth(1))
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .ok_or_else(|| ReleaseError::Cli(crate::error::CliError::InvalidArguments {
-            reason: format!("Could not find package name in {}", cargo_toml_path.display()),
-        }))?;
+    // Step 2: Parse TOML once
+    let toml_value: toml::Value = toml::from_str(&content).map_err(|e| {
+        ReleaseError::Cli(crate::error::CliError::ExecutionFailed {
+            command: "parse_cargo_toml".to_string(),
+            reason: format!("Failed to parse Cargo.toml: {}", e),
+        })
+    })?;
 
-    // Parse version
-    let version = content
-        .lines()
-        .find(|line| line.trim().starts_with("version = "))
-        .and_then(|line| line.split('=').nth(1))
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .ok_or_else(|| ReleaseError::Cli(crate::error::CliError::InvalidArguments {
-            reason: format!("Could not find version in {}", cargo_toml_path.display()),
-        }))?;
+    let package = toml_value.get("package").ok_or_else(|| {
+        ReleaseError::Cli(crate::error::CliError::InvalidArguments {
+            reason: "No [package] section in Cargo.toml".to_string(),
+        })
+    })?;
 
-    // Binary name defaults to package name (simplified - doesn't handle [[bin]] sections)
-    let binary_name = name.clone();
+    // Step 3: Extract package name
+    let name = package
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ReleaseError::Cli(crate::error::CliError::InvalidArguments {
+                reason: "Missing 'name' in [package]".to_string(),
+            })
+        })?
+        .to_string();
+
+    // Step 4: Extract version
+    let version = package
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ReleaseError::Cli(crate::error::CliError::InvalidArguments {
+                reason: "Missing 'version' in [package]".to_string(),
+            })
+        })?
+        .to_string();
+
+    // Step 5: Discover binary name from [[bin]] sections or fallback to package name
+    let binary_name = toml_value
+        .get("bin")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("name"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| Some(name.clone()))
+        .ok_or_else(|| {
+            ReleaseError::Cli(crate::error::CliError::InvalidArguments {
+                reason: "No binary found in Cargo.toml".to_string(),
+            })
+        })?;
 
     Ok(Manifest {
         metadata: PackageMetadata {
-            name: name.clone(),
+            name,
             version,
         },
         binary_name,
