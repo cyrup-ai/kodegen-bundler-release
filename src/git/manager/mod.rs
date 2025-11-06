@@ -18,8 +18,8 @@ pub use state::ReleaseState;
 use crate::error::Result;
 use crate::git::{BranchInfo, CommitInfo, GitOperations, KodegenGitOperations, ValidationResult};
 use semver::Version;
-use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Mutex;
 
 use release::ReleaseOperations;
 use validation::ValidationOperations;
@@ -32,7 +32,7 @@ pub struct GitManager {
     /// Configuration for Git operations
     config: GitConfig,
     /// Release state tracking
-    release_state: RefCell<ReleaseState>,
+    release_state: Mutex<ReleaseState>,
 }
 
 impl GitManager {
@@ -40,7 +40,7 @@ impl GitManager {
     pub async fn new<P: AsRef<Path>>(repo_path: P) -> Result<Self> {
         let repository = KodegenGitOperations::open(repo_path).await?;
         let config = GitConfig::default();
-        let release_state = RefCell::new(ReleaseState::default());
+        let release_state = Mutex::new(ReleaseState::default());
 
         Ok(Self {
             repository,
@@ -52,7 +52,7 @@ impl GitManager {
     /// Create a Git manager with custom configuration
     pub async fn with_config<P: AsRef<Path>>(repo_path: P, config: GitConfig) -> Result<Self> {
         let repository = KodegenGitOperations::open(repo_path).await?;
-        let release_state = RefCell::new(ReleaseState::default());
+        let release_state = Mutex::new(ReleaseState::default());
 
         Ok(Self {
             repository,
@@ -162,18 +162,26 @@ impl GitManager {
 
     /// Check if there's an active release
     pub fn has_active_release(&self) -> bool {
-        let state = self.release_state.borrow();
-        state.release_commit.is_some() || state.release_tag.is_some()
+        match self.release_state.lock() {
+            Ok(state) => state.release_commit.is_some() || state.release_tag.is_some(),
+            Err(_) => false, // Safe default: assume no active release if lock fails
+        }
     }
 
     /// Get current release state
     pub fn release_state(&self) -> ReleaseState {
-        self.release_state.borrow().clone()
+        match self.release_state.lock() {
+            Ok(state) => state.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(), // Recover from poisoned mutex
+        }
     }
 
     /// Clear release state (call after successful completion)
     pub fn clear_release_state(&self) {
-        *self.release_state.borrow_mut() = ReleaseState::default();
+        match self.release_state.lock() {
+            Ok(mut state) => *state = ReleaseState::default(),
+            Err(poisoned) => *poisoned.into_inner() = ReleaseState::default(),
+        }
     }
 
     /// Create a backup point before starting operations

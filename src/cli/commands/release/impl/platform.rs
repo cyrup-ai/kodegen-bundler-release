@@ -169,7 +169,7 @@ pub async fn bundle_native_platform(
     // Construct output path with explicit architecture
     // Note: We do NOT create the artifacts directory - bundler handles this
     let filename = construct_output_filename(ctx, platform, arch)?;
-    let output_path = ctx.temp_dir.join("artifacts").join(&filename);
+    let output_path = ctx.release_clone_path.join("artifacts").join(&filename);
     
     ctx.config.verbose_println(&format!(
         "   Target architecture: {}\n   Output path: {}",
@@ -181,7 +181,7 @@ pub async fn bundle_native_platform(
     // Bundler will create parent directories and move artifact there
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
-        .arg(ctx.temp_dir)
+        .arg(ctx.release_clone_path)
         .arg("--platform")
         .arg(platform)
         .arg("--binary-name")
@@ -257,7 +257,7 @@ pub async fn bundle_docker_platform(
     // Construct output path with explicit architecture
     // Note: We do NOT create the artifacts directory - bundler handles this
     let filename = construct_output_filename(ctx, platform, arch)?;
-    let output_path = ctx.temp_dir.join("artifacts").join(&filename);
+    let output_path = ctx.release_clone_path.join("artifacts").join(&filename);
     
     ctx.config.verbose_println(&format!(
         "   Docker target architecture: {}\n   Output path: {}",
@@ -269,7 +269,7 @@ pub async fn bundle_docker_platform(
     // Bundler will create parent directories and move artifact there
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
-        .arg(ctx.temp_dir)
+        .arg(ctx.release_clone_path)
         .arg("--platform")
         .arg(platform)
         .arg("--binary-name")

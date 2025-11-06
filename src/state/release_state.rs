@@ -21,6 +21,10 @@ pub const STATE_FORMAT_VERSION: u32 = 1;
 pub struct ReleaseState {
     /// Version of the state format
     pub format_version: u32,
+    /// Save operation version (incremented on every save, detects concurrent modifications)
+    /// This provides TOCTTOU protection by detecting if another process modified the
+    /// state file between when we read it and when we write it.
+    pub save_version: u64,
     /// Unique ID for this release operation
     pub release_id: String,
     /// Version being released

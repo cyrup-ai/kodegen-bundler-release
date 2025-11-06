@@ -3,7 +3,7 @@
 use crate::error::{GitError, Result};
 use crate::git::{GitOperations, KodegenGitOperations};
 use semver::Version;
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use super::config::GitConfig;
 use super::results::{ReleaseResult, RollbackResult};
@@ -13,7 +13,7 @@ use super::state::ReleaseState;
 pub(super) struct ReleaseOperations<'a> {
     pub(super) repository: &'a KodegenGitOperations,
     pub(super) config: &'a GitConfig,
-    pub(super) release_state: &'a RefCell<ReleaseState>,
+    pub(super) release_state: &'a Mutex<ReleaseState>,
 }
 
 impl<'a> ReleaseOperations<'a> {
@@ -49,10 +49,10 @@ impl<'a> ReleaseOperations<'a> {
                 .await
             {
                 Ok(_wip_commit) => {
-                    // WIP committed successfully
+                    // Auto-commit of uncommitted changes succeeded
                 }
                 Err(e) => {
-                    // Failed to commit WIP - try to return to main and report status
+                    // Failed to auto-commit uncommitted changes - try to return to main and report status
                     let recovery_instructions = self.get_recovery_instructions().await;
                     return Err(GitError::CommitFailed {
                         reason: format!(
@@ -125,7 +125,12 @@ impl<'a> ReleaseOperations<'a> {
         };
 
         // Track the created branch in release state for rollback
-        self.release_state.borrow_mut().release_branch = Some(release_branch.clone());
+        self.release_state
+            .lock()
+            .map_err(|_| GitError::BranchOperationFailed {
+                reason: "Failed to acquire lock on release state".to_string(),
+            })?
+            .release_branch = Some(release_branch.clone());
 
         // Step 6: Commit version changes on release branch
         let commit_message = self.config.generate_commit_message(version);
@@ -146,7 +151,12 @@ impl<'a> ReleaseOperations<'a> {
                 .into());
             }
         };
-        self.release_state.borrow_mut().release_commit = Some(commit.clone());
+        self.release_state
+            .lock()
+            .map_err(|_| GitError::CommitFailed {
+                reason: "Failed to acquire lock on release state".to_string(),
+            })?
+            .release_commit = Some(commit.clone());
 
         // Step 7: Create version tag on release branch
         let tag_message = self.config.generate_tag_message(version);
@@ -167,7 +177,12 @@ impl<'a> ReleaseOperations<'a> {
                 .into());
             }
         };
-        self.release_state.borrow_mut().release_tag = Some(tag.clone());
+        self.release_state
+            .lock()
+            .map_err(|_| GitError::CommitFailed {
+                reason: "Failed to acquire lock on release state".to_string(),
+            })?
+            .release_tag = Some(tag.clone());
 
         // Step 8: Push release branch with tags to remote (if requested)
         let release_branch_push_info = if push_to_remote {
@@ -178,7 +193,11 @@ impl<'a> ReleaseOperations<'a> {
                 .await
             {
                 Ok(push_info) => {
-                    let mut state = self.release_state.borrow_mut();
+                    let mut state = self.release_state
+                        .lock()
+                        .map_err(|_| GitError::PushFailed {
+                            reason: "Failed to acquire lock on release state".to_string(),
+                        })?;
                     state.tags_pushed = true;
                     state.branch_pushed = true;
                     Some(push_info)
@@ -228,11 +247,22 @@ impl<'a> ReleaseOperations<'a> {
 
         // 1. Delete remote tag if it was pushed
         let tag_name = {
-            let state = self.release_state.borrow();
-            if state.tags_pushed && state.release_tag.is_some() {
-                state.release_tag.as_ref().map(|t| t.name.clone())
-            } else {
-                None
+            match self.release_state.lock() {
+                Ok(state) => {
+                    if state.tags_pushed && state.release_tag.is_some() {
+                        state.release_tag.as_ref().map(|t| t.name.clone())
+                    } else {
+                        None
+                    }
+                }
+                Err(poisoned) => {
+                    let state = poisoned.into_inner();
+                    if state.tags_pushed && state.release_tag.is_some() {
+                        state.release_tag.as_ref().map(|t| t.name.clone())
+                    } else {
+                        None
+                    }
+                }
             }
         };
         
@@ -252,8 +282,10 @@ impl<'a> ReleaseOperations<'a> {
 
         // 2. Delete local tag
         let tag_name = {
-            let state = self.release_state.borrow();
-            state.release_tag.as_ref().map(|t| t.name.clone())
+            match self.release_state.lock() {
+                Ok(state) => state.release_tag.as_ref().map(|t| t.name.clone()),
+                Err(poisoned) => poisoned.into_inner().release_tag.as_ref().map(|t| t.name.clone()),
+            }
         };
         
         if let Some(tag_name) = tag_name {
@@ -273,11 +305,22 @@ impl<'a> ReleaseOperations<'a> {
 
         // 3. Delete remote branch if it was pushed
         let branch_name = {
-            let state = self.release_state.borrow();
-            if state.branch_pushed && state.release_branch.is_some() {
-                state.release_branch.as_ref().map(|b| b.name.clone())
-            } else {
-                None
+            match self.release_state.lock() {
+                Ok(state) => {
+                    if state.branch_pushed && state.release_branch.is_some() {
+                        state.release_branch.as_ref().map(|b| b.name.clone())
+                    } else {
+                        None
+                    }
+                }
+                Err(poisoned) => {
+                    let state = poisoned.into_inner();
+                    if state.branch_pushed && state.release_branch.is_some() {
+                        state.release_branch.as_ref().map(|b| b.name.clone())
+                    } else {
+                        None
+                    }
+                }
             }
         };
         
@@ -312,8 +355,10 @@ impl<'a> ReleaseOperations<'a> {
 
         // 5. Delete local branch (safe now because we're on main)
         let branch_name = {
-            let state = self.release_state.borrow();
-            state.release_branch.as_ref().map(|b| b.name.clone())
+            match self.release_state.lock() {
+                Ok(state) => state.release_branch.as_ref().map(|b| b.name.clone()),
+                Err(poisoned) => poisoned.into_inner().release_branch.as_ref().map(|b| b.name.clone()),
+            }
         };
         
         if let Some(branch_name) = branch_name {
@@ -335,7 +380,10 @@ impl<'a> ReleaseOperations<'a> {
         }
 
         // Clear release state
-        *self.release_state.borrow_mut() = ReleaseState::default();
+        match self.release_state.lock() {
+            Ok(mut state) => *state = ReleaseState::default(),
+            Err(poisoned) => *poisoned.into_inner() = ReleaseState::default(),
+        }
 
         let duration = start_time.elapsed();
 

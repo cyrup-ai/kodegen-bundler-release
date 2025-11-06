@@ -1,7 +1,8 @@
 //! Retry logic with exponential backoff for network operations.
 
 use crate::cli::RuntimeConfig;
-use crate::error::{PublishError, ReleaseError, Result};
+use crate::error::{CliError, PublishError, ReleaseError, Result};
+use tokio::time::{Duration, Instant};
 
 /// Maximum backoff time in seconds (1 hour)
 /// Prevents exponential backoff from producing impractical wait times
@@ -19,23 +20,42 @@ const MAX_BACKOFF_SECONDS: u64 = 3600;
 /// * `max_retries` - Maximum number of retry attempts (0 = try once, no retries)
 /// * `operation_name` - Human-readable name for logging
 /// * `config` - Runtime config for user messaging
+/// * `absolute_timeout` - Optional absolute timeout for the entire retry operation (default: 30 minutes)
 ///
 /// # Returns
 /// * `Ok(T)` - Operation succeeded (possibly after retries)
-/// * `Err(ReleaseError)` - Operation failed after all retries, or unrecoverable error
+/// * `Err(ReleaseError)` - Operation failed after all retries, unrecoverable error, or timeout
 pub async fn retry_with_backoff<F, T, Fut>(
     mut operation: F,
     max_retries: u32,
     operation_name: &str,
     config: &RuntimeConfig,
+    absolute_timeout: Option<Duration>,
 ) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
+    // Default absolute timeout: 30 minutes
+    let start_time = Instant::now();
+    let deadline = start_time + absolute_timeout.unwrap_or(Duration::from_secs(1800));
+    
     let mut attempts = 0;
     
     loop {
+        // Check absolute timeout before attempting operation
+        if Instant::now() >= deadline {
+            let total_time = Instant::now().duration_since(start_time);
+            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                command: operation_name.to_string(),
+                reason: format!(
+                    "Operation timed out after {} attempts over {:.1}s",
+                    attempts,
+                    total_time.as_secs_f64()
+                ),
+            }));
+        }
+        
         match operation().await {
             Ok(result) => {
                 if attempts > 0 {
@@ -84,6 +104,18 @@ where
                     }
                 };
                 
+                // Calculate remaining time until deadline
+                let remaining_time = deadline.saturating_duration_since(Instant::now());
+                let actual_wait = Duration::from_secs(wait_seconds).min(remaining_time);
+                
+                // Check if we have any time left
+                if actual_wait.is_zero() {
+                    return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                        command: operation_name.to_string(),
+                        reason: "Absolute timeout reached before retry could be attempted".to_string(),
+                    }));
+                }
+                
                 // Log retry attempt
                 config.warning_println(&format!(
                     "⚠️  {} failed (attempt {}/{}): {}",
@@ -92,10 +124,10 @@ where
                     max_retries + 1,
                     e
                 ));
-                config.indent(&format!("   Retrying in {}s...", wait_seconds));
+                config.indent(&format!("   Retrying in {:.1}s...", actual_wait.as_secs_f64()));
                 
-                // Wait before retry
-                tokio::time::sleep(tokio::time::Duration::from_secs(wait_seconds)).await;
+                // Wait before retry (respecting deadline)
+                tokio::time::sleep(actual_wait).await;
             }
         }
     }

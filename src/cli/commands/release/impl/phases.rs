@@ -43,6 +43,7 @@ pub async fn execute_phases_with_retry(
             ctx.config.retry_config.git_operations,
             "Git operations",
             ctx.config,
+            None,
         ).await?;
         
         ctx.config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
@@ -119,6 +120,7 @@ pub async fn execute_phases_with_retry(
             ctx.config.retry_config.github_api,
             "GitHub release creation",
             ctx.config,
+            None,
         ).await?;
         
         ctx.config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
@@ -150,7 +152,7 @@ pub async fn execute_phases_with_retry(
     let build_output = std::process::Command::new("cargo")
         .arg("build")
         .arg("--release")
-        .current_dir(ctx.temp_dir)
+        .current_dir(ctx.release_clone_path)
         .output()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: "cargo build --release".to_string(),
@@ -279,6 +281,7 @@ pub async fn execute_phases_with_retry(
             ctx.config.retry_config.release_publishing,
             "Publish GitHub release",
             ctx.config,
+            None,
         ).await?;
         
         ctx.config.success_println(&format!("✓ Published release v{}", ctx.new_version));
@@ -305,7 +308,7 @@ pub async fn execute_phases_with_retry(
                     .arg("publish")
                     .arg("--registry")
                     .arg(registry)
-                    .current_dir(ctx.temp_dir)
+                    .current_dir(ctx.release_clone_path)
                     .output()
                     .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
                         command: "cargo_publish".to_string(),
@@ -325,6 +328,7 @@ pub async fn execute_phases_with_retry(
             ctx.config.retry_config.release_publishing,
             &format!("Publish to {}", registry),
             ctx.config,
+            None,
         ).await;
         
         match publish_result {
@@ -351,8 +355,8 @@ pub async fn execute_phases_with_retry(
             name: ctx.metadata.name.clone(),
             version: ctx.new_version.to_string(),
             path: std::path::PathBuf::from("."),
-            absolute_path: ctx.temp_dir.to_path_buf(),
-            cargo_toml_path: ctx.temp_dir.join("Cargo.toml"),
+            absolute_path: ctx.release_clone_path.to_path_buf(),
+            cargo_toml_path: ctx.release_clone_path.join("Cargo.toml"),
             config: PackageConfig {
                 name: ctx.metadata.name.clone(),
                 version: toml::Value::String(ctx.new_version.to_string()),

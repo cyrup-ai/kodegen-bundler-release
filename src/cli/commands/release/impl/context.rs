@@ -8,7 +8,7 @@ use super::super::ReleaseOptions;
 /// Context for executing release phases with all required dependencies
 pub struct ReleasePhaseContext<'a> {
     /// Temporary directory for isolated execution
-    pub temp_dir: &'a std::path::Path,
+    pub release_clone_path: &'a std::path::Path,
     /// Package metadata from Cargo.toml
     pub metadata: &'a crate::metadata::PackageMetadata,
     /// Binary name to build and release

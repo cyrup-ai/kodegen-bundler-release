@@ -124,7 +124,7 @@ pub async fn perform_release_single_repo(
     // ===== EXECUTE PHASES 2-8 WITH RETRY AND SELECTIVE CLEANUP =====
     // Create context for phase execution
     let phase_ctx = ReleasePhaseContext {
-        temp_dir,
+        release_clone_path: temp_dir,
         metadata: &metadata,
         binary_name: &binary_name,
         new_version: &new_version,
@@ -361,6 +361,7 @@ async fn handle_unrecoverable_error(
             config.retry_config.cleanup_operations,
             "GitHub release deletion",
             config,
+            None,
         ).await;
         
         match delete_result {
@@ -394,6 +395,7 @@ async fn handle_unrecoverable_error(
         config.retry_config.cleanup_operations,
         "Git rollback",
         config,
+        None,
     ).await?;
     
     // Handle rollback result
