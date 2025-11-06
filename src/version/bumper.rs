@@ -288,9 +288,3 @@ impl std::fmt::Display for VersionBump {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    // Note: Tests will be written in ./tests/ directory by another agent
-    // This is just to ensure the module compiles correctly
-}

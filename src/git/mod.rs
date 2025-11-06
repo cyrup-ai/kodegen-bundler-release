@@ -10,9 +10,7 @@ mod manager;
 mod operations;
 
 pub use git_adapter::KodegenGitOperations;
-pub use manager::{
-    GitConfig, GitManager, ReleaseResult, RollbackResult,
-};
+pub use manager::{GitConfig, GitManager, ReleaseResult, RollbackResult};
 pub use operations::{
     BranchInfo, CommitInfo, GitOperations, PushInfo, RemoteInfo, ResetType, TagInfo,
     ValidationResult,
