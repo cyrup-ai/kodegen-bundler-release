@@ -104,7 +104,7 @@ pub fn construct_output_filename(
     platform: &str,
     arch: &str,
 ) -> Result<String> {
-    let product_name = &ctx.metadata.name;
+    let product_name = ctx.binary_name;
     let version = ctx.new_version.to_string();
     
     let filename = match platform {

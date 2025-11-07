@@ -3,10 +3,8 @@
 //! This module orchestrates phases 2-8 of the release process with intelligent
 //! retry logic for network operations.
 
-use crate::error::{CliError, PublishError, ReleaseError, Result};
-use crate::publish::{CargoPublisher, PublishConfig};
+use crate::error::{CliError, ReleaseError, Result};
 use crate::state::ReleaseState;
-use crate::workspace::{PackageConfig, PackageInfo};
 
 use super::context::ReleasePhaseContext;
 use super::platform::{
@@ -22,7 +20,13 @@ use super::retry::retry_with_backoff;
 pub async fn execute_phases_with_retry(
     ctx: &ReleasePhaseContext<'_>,
     release_state: &mut ReleaseState,
+    _env_config: &crate::EnvConfig,
 ) -> Result<()> {
+    // Use default retry and timeout configs
+    use crate::cli::retry_config::RetryConfig;
+    use crate::cli::retry_config::CargoTimeoutConfig;
+    let retry_config = RetryConfig::default();
+    let timeout_config = CargoTimeoutConfig::default();
     // ===== PHASE 2: GIT OPERATIONS (with retry) =====
     let git_result: Option<crate::git::ReleaseResult> = if release_state.has_completed(crate::state::ReleasePhase::GitOperations) {
         ctx.config.println("✓ Skipping git operations (already completed)");
@@ -39,8 +43,8 @@ pub async fn execute_phases_with_retry(
         ctx.config.println("📝 Creating git commit...");
         
         let result = retry_with_backoff(
-            || ctx.git_manager.perform_release(ctx.new_version, !ctx.options.no_push),
-            ctx.config.retry_config.git_operations,
+            || ctx.git_manager.perform_release(ctx.new_version, true),  // Always push
+            retry_config.git_operations,
             "Git operations",
             ctx.config,
             None,
@@ -48,9 +52,7 @@ pub async fn execute_phases_with_retry(
         
         ctx.config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
         ctx.config.success_println(&format!("✓ Tagged: {}", result.tag.name));
-        if !ctx.options.no_push {
-            ctx.config.success_println("✓ Pushed to origin");
-        }
+        ctx.config.success_println("✓ Pushed to origin");
         
         // Save state after git operations complete
         release_state.set_phase(crate::state::ReleasePhase::GitOperations);
@@ -117,7 +119,7 @@ pub async fn execute_phases_with_retry(
                 &commit_hash,
                 None,
             ),
-            ctx.config.retry_config.github_api,
+            retry_config.github_api,
             "GitHub release creation",
             ctx.config,
             None,
@@ -126,7 +128,7 @@ pub async fn execute_phases_with_retry(
         ctx.config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
         
         // Track release in state for potential cleanup
-        release_state.set_github_state(ctx.owner.to_string(), ctx.repo.to_string(), Some(&release_result));
+        release_state.set_github_state(ctx.github_owner.to_string(), ctx.github_repo_name.to_string(), Some(&release_result));
         let release_id = release_result.release_id;
         
         // Save state after GitHub release created
@@ -152,7 +154,7 @@ pub async fn execute_phases_with_retry(
     use tokio::process::Command;
     use tokio::time::{timeout, Duration};
     
-    let build_timeout = Duration::from_secs(ctx.config.cargo_timeout_config.build_timeout_secs);
+    let build_timeout = Duration::from_secs(timeout_config.build_timeout_secs);
     
     let build_output = timeout(
         build_timeout,
@@ -167,7 +169,7 @@ pub async fn execute_phases_with_retry(
         command: "cargo build --release".to_string(),
         reason: format!(
             "Build timed out after {} seconds. Try setting KODEGEN_BUILD_TIMEOUT to a higher value.",
-            ctx.config.cargo_timeout_config.build_timeout_secs
+            timeout_config.build_timeout_secs
         ),
     }))?
     .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
@@ -294,7 +296,7 @@ pub async fn execute_phases_with_retry(
         
         retry_with_backoff(
             || ctx.github_manager.publish_draft_release(release_id),
-            ctx.config.retry_config.release_publishing,
+            retry_config.release_publishing,
             "Publish GitHub release",
             ctx.config,
             None,
@@ -315,127 +317,49 @@ pub async fn execute_phases_with_retry(
     }
     
     // ===== PHASE 8: PUBLISH TO CRATES.IO (with retry) =====
-    if let Some(registry) = &ctx.options.registry {
-        ctx.config.println(&format!("📦 Publishing to {}...", registry));
-        
-        let publish_result = retry_with_backoff(
-            || async {
-                let output = std::process::Command::new("cargo")
-                    .arg("publish")
-                    .arg("--registry")
-                    .arg(registry)
-                    .current_dir(ctx.release_clone_path)
-                    .output()
-                    .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-                        command: "cargo_publish".to_string(),
-                        reason: e.to_string(),
-                    }))?;
-                
-                if output.status.success() {
-                    Ok(())
-                } else {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    Err(ReleaseError::Publish(PublishError::PublishFailed {
-                        package: ctx.metadata.name.clone(),
-                        reason: stderr.to_string(),
-                    }))
+    ctx.config.println("📦 Publishing to crates.io...");
+    
+    // Just use cargo publish directly - simpler and works
+    let publish_result = retry_with_backoff(
+        || async {
+            let output = std::process::Command::new("cargo")
+                .arg("publish")
+                .current_dir(ctx.release_clone_path)
+                .output()
+                .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "cargo_publish".to_string(),
+                    reason: e.to_string(),
+                }))?;
+            
+            if output.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                // Check if already published (non-fatal)
+                if stderr.contains("already uploaded") {
+                    ctx.config.warning_println("⚠️  Package already published to crates.io");
+                    return Ok(());
                 }
-            },
-            ctx.config.retry_config.release_publishing,
-            &format!("Publish to {}", registry),
-            ctx.config,
-            None,
-        ).await;
-        
-        match publish_result {
-            Ok(()) => {
-                ctx.config.success_println(&format!("✓ Published {} v{} to {}", ctx.metadata.name, ctx.new_version, registry));
+                Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "cargo publish".to_string(),
+                    reason: stderr.to_string(),
+                }))
             }
-            Err(e) => {
-                ctx.config.warning_println(&format!("⚠️  Publishing failed: {}", e));
-                // Continue anyway - GitHub release is already published
-            }
+        },
+        retry_config.release_publishing,
+        "Publish to crates.io",
+        ctx.config,
+        None,
+    ).await;
+    
+    match publish_result {
+        Ok(()) => {
+            ctx.config.success_println(&format!("✓ Published v{} to crates.io", ctx.new_version));
         }
-    } else {
-        ctx.config.println("📦 Publishing to crates.io...");
-        
-        // Create CargoPublisher with configuration from retry_config
-        let publisher = CargoPublisher::with_retry_config(
-            ctx.config.retry_config.release_publishing as usize,
-            std::time::Duration::from_secs(5),  // base delay
-            std::time::Duration::from_secs(300), // 5 min timeout
-        );
-        
-        // Build PackageInfo from metadata
-        let package_info = PackageInfo {
-            name: ctx.metadata.name.clone(),
-            version: ctx.new_version.to_string(),
-            path: std::path::PathBuf::from("."),
-            absolute_path: ctx.release_clone_path.to_path_buf(),
-            cargo_toml_path: ctx.release_clone_path.join("Cargo.toml"),
-            config: PackageConfig {
-                name: ctx.metadata.name.clone(),
-                version: toml::Value::String(ctx.new_version.to_string()),
-                edition: None,
-                description: None,
-                license: None,
-                authors: None,
-                homepage: None,
-                repository: None,
-                publish: None,
-                other: std::collections::HashMap::new(),
-            },
-            workspace_dependencies: Vec::new(),
-            all_dependencies: std::collections::HashMap::new(),
-        };
-        
-        // Build PublishConfig from options
-        let publish_config = PublishConfig {
-            registry: ctx.options.registry.clone(),
-            dry_run_first: false,
-            allow_dirty: false,
-            additional_args: vec![],
-            token: None, // Uses cargo login credentials
-        };
-        
-        // Publish using CargoPublisher
-        match publisher.publish_package(&package_info, &publish_config).await {
-            Ok(result) => {
-                // Use structured result for better output
-                ctx.config.success_println(&result.summary());
-                
-                // Display warnings if any
-                if !result.warnings.is_empty() {
-                    for warning in &result.warnings {
-                        ctx.config.warning_println(&format!("  ⚠️  {}", warning));
-                    }
-                }
-                
-                // Log detailed info in verbose mode
-                ctx.config.verbose_println(&format!(
-                    "  Published in {:.2}s with {} retry(ies)",
-                    result.duration.as_secs_f64(),
-                    result.retry_attempts
-                ));
-            }
-            Err(e) => {
-                // More informative error handling
-                if let ReleaseError::Publish(ref publish_err) = e {
-                    match publish_err {
-                        PublishError::AlreadyPublished { .. } => {
-                            ctx.config.warning_println(&format!("  ⚠️  {}", e));
-                        }
-                        _ => {
-                            ctx.config.verbose_println(&format!(
-                                "ℹ️  Skipping crates.io publish: {}",
-                                e
-                            ));
-                        }
-                    }
-                } else {
-                    ctx.config.verbose_println("ℹ️  Skipping crates.io publish (may not be a library crate)");
-                }
-            }
+        Err(e) => {
+            ctx.config.warning_println(&format!("⚠️  Publishing failed: {}", e));
+            ctx.config.warning_println("   GitHub release is still published successfully");
+            // Don't fail the entire release if crates.io publish fails
         }
     }
     

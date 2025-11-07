@@ -1,4 +1,3 @@
-//! Main release orchestration logic for single repositories.
 //!
 //! This module contains the primary `perform_release_single_repo` function that
 //! coordinates all release phases with state management and error recovery.
@@ -7,10 +6,10 @@ use crate::cli::RuntimeConfig;
 use crate::error::{GitError, ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
 use crate::state::{has_active_release, load_release_state, LoadStateResult, ReleaseState};
+use crate::version::VersionBump;
 use crate::EnvConfig;
 
-use super::super::super::helpers::{detect_github_repo, parse_github_repo_string};
-use super::super::ReleaseOptions;
+use super::super::super::helpers::detect_github_repo;
 use super::context::ReleasePhaseContext;
 use super::phases::execute_phases_with_retry;
 use super::retry::retry_with_backoff;
@@ -24,13 +23,12 @@ pub async fn perform_release_single_repo(
     metadata: crate::metadata::PackageMetadata,
     binary_name: String,
     config: &RuntimeConfig,
-    options: &ReleaseOptions,
     env_config: &EnvConfig,
 ) -> Result<i32> {
     config.println("🚀 Starting release in isolated environment");
     
     // ===== LOAD OR CREATE RELEASE STATE =====
-    let mut release_state = load_or_create_release_state(&metadata, options, config).await?;
+    let mut release_state = load_or_create_release_state(&metadata, config).await?;
     
     // Extract version information for use in subsequent code
     let new_version = release_state.target_version.clone();
@@ -48,7 +46,7 @@ pub async fn perform_release_single_repo(
     let git_config = GitConfig {
         default_remote: "origin".to_string(),
         annotated_tags: true,
-        auto_push_tags: !options.no_push,
+        auto_push_tags: true,  // Always push tags
         ..Default::default()
     };
     let git_manager = GitManager::with_config(temp_dir, git_config).await?;
@@ -65,116 +63,138 @@ pub async fn perform_release_single_repo(
     
     config.success_println(&format!("✓ v{} → v{} ({})", current_version, new_version, version_bump));
     
+    // Use default retry and timeout configs
+    use crate::cli::retry_config::{RetryConfig, CargoTimeoutConfig};
+    let retry_config = RetryConfig::default();
+    let timeout_config = CargoTimeoutConfig::default();
+    
     // Update Cargo.toml with new version and get parsed content for verification
-    let parsed_toml = crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
-
-    // VERIFY: Confirm version matches using in-memory parsed content (no redundant file read)
-    verify_version_in_parsed_toml(&cargo_toml_path, &parsed_toml, &new_version)?;
-
-    // Update Cargo.lock to match new version
-    update_cargo_lock(temp_dir, &new_version).await?;
-
+    let updated_toml_value = crate::version::update_single_toml(&cargo_toml_path, &new_version.to_string())?;
+    
+    // Verify the version was correctly written using the parsed content (faster, no disk read)
+    verify_version_in_parsed_toml(&updated_toml_value, &new_version)?;
+    
+    // Update Cargo.lock with new version
+    config.verbose_println("   Updating Cargo.lock...");
+    
+    let update_lock_result = retry_with_backoff(
+        || async {
+            tokio::process::Command::new("cargo")
+                .arg("update")
+                .arg("--workspace")
+                .arg("--verbose")
+                .current_dir(temp_dir)
+                .output()
+                .await
+                .map_err(|e| ReleaseError::Cli(crate::error::CliError::ExecutionFailed {
+                    command: "cargo update".to_string(),
+                    reason: e.to_string(),
+                }))
+        },
+        retry_config.git_operations,  // Use git_operations for cargo operations
+        "Cargo lock update",
+        config,
+        Some(std::time::Duration::from_secs(timeout_config.update_timeout_secs)),
+    ).await?;
+    
+    if !update_lock_result.status.success() {
+        return Err(ReleaseError::Cli(crate::error::CliError::ExecutionFailed {
+            command: "cargo update".to_string(),
+            reason: String::from_utf8_lossy(&update_lock_result.stderr).to_string(),
+        }));
+    }
+    
     config.success_println("✓ Updated and verified Cargo.toml and Cargo.lock");
     
-    // ===== PHASE 1.5: AUTOMATIC CLEANUP OF CONFLICTS =====
+    // Save state after version bump
+    release_state.set_phase(crate::state::ReleasePhase::VersionUpdate);
+    crate::state::save_release_state(&mut release_state).await?;
+    config.verbose_println("ℹ️  Saved progress checkpoint (Version bumped)");
+    
+    // ===== PHASE 2: DETECT AND RESOLVE CONFLICTS =====
     config.println("🔍 Checking for conflicting artifacts...");
     
-    // Check and cleanup existing tag
-    if git_manager.version_tag_exists(&new_version).await? {
-        config.println(&format!("⚠️  Tag v{} already exists - cleaning up...", new_version));
+    // Check if tag exists
+    let tag_exists = git_manager.version_tag_exists(&new_version).await?;
+    
+    if tag_exists {
+        config.warning_println(&format!("⚠️  Tag v{} already exists - cleaning up...", new_version));
         git_manager.cleanup_existing_tag(&new_version).await?;
         config.success_println("✓ Cleaned up existing tag");
     }
     
-    // Check and cleanup existing branch (local or remote)
-    let has_local_branch = git_manager.release_branch_exists(&new_version).await?;
-    let has_remote_branch = git_manager.remote_release_branch_exists(&new_version).await?;
+    // Check if release branch exists
+    let branch_exists = git_manager.remote_release_branch_exists(&new_version).await?;
     
-    if has_local_branch || has_remote_branch {
-        config.println(&format!("⚠️  Branch v{} already exists - cleaning up...", new_version));
+    if branch_exists {
+        config.warning_println(&format!("⚠️  Branch release-v{} already exists - cleaning up...", new_version));
         git_manager.cleanup_existing_branch(&new_version).await?;
         config.success_println("✓ Cleaned up existing branch");
     }
     
-    // Detect GitHub repo early for cleanup
-    let (owner, repo) = if let Some(repo_str) = &options.github_repo {
-        parse_github_repo_string(repo_str)?
-    } else {
-        detect_github_repo(&git_manager).await?
-    };
-    
-    // Create github_manager early for cleanup
-    let github_config = crate::github::GitHubReleaseConfig {
-        owner: owner.clone(),
-        repo: repo.clone(),
-        draft: true,
-        prerelease_for_zero_versions: true,
-        notes: None,
-        token: None, // From GH_TOKEN or GITHUB_TOKEN environment variable
-    };
-    let github_manager = crate::github::GitHubReleaseManager::new(github_config, env_config)?;
-    
-    // Check and cleanup existing GitHub release
-    if github_manager.release_exists(&new_version).await? {
-        config.println(&format!("⚠️  GitHub release v{} already exists - cleaning up...", new_version));
-        github_manager.cleanup_existing_release(&new_version).await?;
-        config.success_println("✓ Cleaned up existing GitHub release");
-    }
-    
     config.success_println("✓ All conflicts resolved - ready to release");
     
-    // ===== EXECUTE PHASES 2-8 WITH RETRY AND SELECTIVE CLEANUP =====
-    // Create context for phase execution
-    let phase_ctx = ReleasePhaseContext {
+    // ===== PHASE 3+: GITHUB SETUP AND REMAINING PHASES =====
+    config.println("🔍 Verifying GitHub API access...");
+    
+    // Auto-detect GitHub repository
+    let (github_owner, github_repo_name) = detect_github_repo(&git_manager).await?;
+    
+    config.verbose_println(&format!(
+        "   Repository: {}/{}",
+        &github_owner, &github_repo_name
+    ));
+    
+    // Initialize GitHub manager
+    let github_config = crate::github::GitHubReleaseConfig {
+        owner: github_owner.clone(),
+        repo: github_repo_name.clone(),
+        draft: false,
+        prerelease_for_zero_versions: true,
+        notes: None,
+        token: None,  // Will be read from env_config in new()
+    };
+    
+    let github_manager = crate::github::GitHubReleaseManager::new(github_config, env_config)?;
+    config.success_println("✓ GitHub API authenticated");
+    
+    // ===== BUILD CONTEXT FOR PHASE EXECUTION =====
+    let ctx = ReleasePhaseContext {
         release_clone_path: temp_dir,
-        metadata: &metadata,
         binary_name: &binary_name,
         new_version: &new_version,
         config,
-        options,
         git_manager: &git_manager,
         github_manager: &github_manager,
-        owner: &owner,
-        repo: &repo,
+        github_owner: &github_owner,
+        github_repo_name: &github_repo_name,
     };
     
-    // Execute phases with context
-    let result = execute_phases_with_retry(&phase_ctx, &mut release_state).await;
+    // ===== EXECUTE REMAINING PHASES WITH RETRY =====
+    execute_phases_with_retry(&ctx, &mut release_state, env_config).await?;
     
-    match result {
+    // ===== CLEANUP RELEASE STATE ON SUCCESS =====
+    config.success_println("🎉 Release complete!");
+    config.success_println(&format!("   Package: {}", metadata.name));
+    config.success_println(&format!("   Version: v{}", new_version));
+    
+    // Cleanup release state file after successful release
+    match crate::state::cleanup_release_state() {
         Ok(()) => {
-            // SUCCESS: Clear state and return
-            git_manager.clear_release_state();
-            
-            // Delete state file on success
-            if let Err(e) = crate::state::cleanup_release_state() {
-                config.warning_println(&format!("⚠️  Failed to cleanup state file: {}", e));
-            } else {
-                config.verbose_println("ℹ️  Cleaned up state file (release complete)");
-            }
-            
-            Ok(0)
-        }
-        Err(e) if !e.is_recoverable() => {
-            // UNRECOVERABLE ERROR: Cleanup required
-            handle_unrecoverable_error(e, &release_state, &git_manager, &github_manager, &owner, &repo, config).await
+            config.verbose_println("✓ Release state cleaned up");
         }
         Err(e) => {
-            // RECOVERABLE ERROR (retries exhausted) - No cleanup needed
-            // The error is transient (network, timeout, etc.) - retrying might work next time
-            // Don't cleanup git/GitHub artifacts as they're valid, just incomplete
-            config.println("");
-            config.error_println(&format!("❌ Release failed after retries: {}", e));
-            config.println("");
-            Err(e)
+            config.verbose_println(&format!("Warning: Failed to cleanup release state: {}", e));
+            config.verbose_println("This is non-fatal - the release completed successfully");
         }
     }
+    
+    Ok(0)
 }
 
 /// Load existing release state or create a new one
 async fn load_or_create_release_state(
     metadata: &crate::metadata::PackageMetadata,
-    options: &ReleaseOptions,
     config: &RuntimeConfig,
 ) -> Result<ReleaseState> {
     if has_active_release() {
@@ -196,8 +216,8 @@ async fn load_or_create_release_state(
                         reason: e.to_string(),
                     }))?;
                 
-                let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
-                    .map_err(|e| ReleaseError::Cli(crate::error::CliError::InvalidArguments { reason: e }))?;
+                // Always patch bump
+                let version_bump = VersionBump::Patch;
                 
                 let bumper = crate::version::VersionBumper::from_version(current_version.clone());
                 let expected_version = bumper.bump(version_bump.clone())?;
@@ -211,13 +231,12 @@ async fn load_or_create_release_state(
                     config.warning_println("   Starting fresh release...");
                     
                     // Clean up stale state file before creating new state
-                    // This prevents save_version conflicts with leftover files
                     if let Err(e) = crate::state::cleanup_release_state() {
                         config.warning_println(&format!("⚠️  Failed to cleanup stale state: {}", e));
                     }
                     
                     // Create new state
-                    create_new_release_state(metadata, options)
+                    create_new_release_state(metadata)
                 } else {
                     config.success_println(&format!("✓ Resuming release v{}", state.target_version));
                     config.indent(&format!("   Current phase: {:?}", state.current_phase));
@@ -230,24 +249,22 @@ async fn load_or_create_release_state(
                 config.warning_println("   Starting fresh release...");
                 
                 // Clean up corrupted state file before creating new state
-                // This prevents save_version conflicts with leftover files
                 if let Err(e) = crate::state::cleanup_release_state() {
                     config.warning_println(&format!("⚠️  Failed to cleanup corrupted state: {}", e));
                 }
                 
-                create_new_release_state(metadata, options)
+                create_new_release_state(metadata)
             }
         }
     } else {
         // No existing state - start fresh
-        create_new_release_state(metadata, options)
+        create_new_release_state(metadata)
     }
 }
 
-/// Create a new release state from metadata and options
+/// Create a new release state from metadata
 fn create_new_release_state(
     metadata: &crate::metadata::PackageMetadata,
-    options: &ReleaseOptions,
 ) -> Result<ReleaseState> {
     let current_version = semver::Version::parse(&metadata.version)
         .map_err(|e| ReleaseError::Version(crate::error::VersionError::InvalidVersion {
@@ -255,8 +272,8 @@ fn create_new_release_state(
             reason: e.to_string(),
         }))?;
     
-    let version_bump = crate::version::VersionBump::try_from(options.bump_type.clone())
-        .map_err(|e| ReleaseError::Cli(crate::error::CliError::InvalidArguments { reason: e }))?;
+    // Always patch bump
+    let version_bump = VersionBump::Patch;
     
     let bumper = crate::version::VersionBumper::from_version(current_version.clone());
     let new_version = bumper.bump(version_bump.clone())?;
@@ -268,234 +285,39 @@ fn create_new_release_state(
     ))
 }
 
-/// Verify that the version was correctly written to Cargo.toml (DEPRECATED: use verify_version_in_parsed_toml)
+/// Verify that the version was correctly written to Cargo.toml using parsed TOML
 ///
-/// This function reads the file from disk for verification. For better performance,
-/// use verify_version_in_parsed_toml() with the toml::Value returned from update_single_toml().
-#[allow(dead_code)]
-fn verify_version_update(cargo_toml_path: &std::path::Path, new_version: &semver::Version) -> Result<()> {
-    let verification_content = std::fs::read_to_string(cargo_toml_path)
-        .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: format!("Cannot read back file after write: {}", e),
-        }))?;
-
-    let verification_parsed: toml::Value = toml::from_str(&verification_content)
-        .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: format!("TOML is invalid after update: {}", e),
-        }))?;
-
-    let written_version = verification_parsed
-        .get("package")
-        .and_then(|p| p.get("version"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: "Version field missing after update".to_string(),
-        }))?;
-
-    if written_version != new_version.to_string() {
-        return Err(ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: format!(
-                "Version mismatch: expected {}, found {}",
-                new_version, written_version
-            ),
-        }));
-    }
-
-    Ok(())
-}
-
-/// Verify version in parsed TOML content without re-reading the file.
-///
-/// This function performs in-memory verification using the toml::Value
-/// returned from update_single_toml(), eliminating redundant disk I/O.
+/// This is more efficient than reading the file from disk again.
 fn verify_version_in_parsed_toml(
-    cargo_toml_path: &std::path::Path,
-    parsed_toml: &toml::Value,
-    new_version: &semver::Version,
+    toml_value: &toml::Value,
+    expected_version: &semver::Version,
 ) -> Result<()> {
-    let written_version = parsed_toml
+    let version_str = toml_value
         .get("package")
         .and_then(|p| p.get("version"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: "Version field missing after update".to_string(),
-        }))?;
-
-    if written_version != new_version.to_string() {
-        return Err(ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-            path: cargo_toml_path.to_path_buf(),
-            reason: format!(
-                "Version mismatch: expected {}, found {}",
-                new_version, written_version
-            ),
-        }));
-    }
-
-    Ok(())
-}
-
-/// Update Cargo.lock to match the new version
-async fn update_cargo_lock(temp_dir: &std::path::Path, new_version: &semver::Version) -> Result<()> {
-    use tokio::process::Command;
-    use std::process::Stdio;
-    use tokio::time::{timeout, Duration};
-
-    let update_timeout = Duration::from_secs(300); // Default 5 min - config not available here
-    let update_output = timeout(
-        update_timeout,
-        Command::new("cargo")
-            .arg("update")
-            .arg("--workspace")
-            .current_dir(temp_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-    )
-    .await
-    .map_err(|_| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
-        reason: format!(
-            "Cargo update timed out after {} seconds. Dependency resolution may be stalled.",
-            update_timeout.as_secs()
-        ),
-    }))?
-    .map_err(|e| ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
-        reason: format!("Failed to run cargo update: {}", e),
-    }))?;
-
-    if !update_output.status.success() {
-        let stderr = String::from_utf8_lossy(&update_output.stderr);
-        return Err(ReleaseError::Version(crate::error::VersionError::CargoUpdateFailed {
-            reason: format!("cargo update failed:\n{}", stderr),
-        }));
-    }
-
-    // Verify Cargo.lock was updated
-    let lock_path = temp_dir.join("Cargo.lock");
-    if lock_path.exists() {
-        let lock_content = std::fs::read_to_string(&lock_path)
-            .map_err(|e| ReleaseError::Version(crate::error::VersionError::VerificationFailed {
-                path: lock_path.clone(),
-                reason: format!("Cannot read Cargo.lock: {}", e),
-            }))?;
-        
-        if !lock_content.contains(&new_version.to_string()) {
-            return Err(ReleaseError::Version(crate::error::VersionError::LockFileMismatch {
-                expected_version: new_version.to_string(),
-            }));
-        }
-    }
-
-    Ok(())
-}
-
-/// Handle unrecoverable errors with cleanup
-async fn handle_unrecoverable_error(
-    e: ReleaseError,
-    release_state: &ReleaseState,
-    git_manager: &GitManager,
-    github_manager: &crate::github::GitHubReleaseManager,
-    owner: &str,
-    repo: &str,
-    config: &RuntimeConfig,
-) -> Result<i32> {
-    config.println("");
-    config.error_println(&format!("❌ Release failed with unrecoverable error: {}", e));
-    config.println("");
-    config.println("🧹 Rolling back changes...");
-    
-    let mut cleanup_warnings = Vec::new();
-    
-    // 1. Delete GitHub release if created (Phase 3+)
-    if let Some(github_state) = &release_state.github_state
-        && let Some(release_id) = github_state.release_id
-    {
-        config.indent("🗑️  Deleting GitHub draft release...");
-        
-        // Retry GitHub release deletion with exponential backoff
-        let delete_result = retry_with_backoff(
-            || github_manager.delete_release(release_id),
-            config.retry_config.cleanup_operations,
-            "GitHub release deletion",
-            config,
-            None,
-        ).await;
-        
-        match delete_result {
-            Ok(()) => {
-                config.indent("   ✓ Deleted GitHub release");
-            }
-            Err(delete_err) => {
-                // After retries, log warning but continue cleanup
-                let warning = format!("Failed to delete GitHub release after retries: {}", delete_err);
-                cleanup_warnings.push(warning.clone());
-                config.indent(&format!("   ⚠️  {}", warning));
-                config.indent(&format!("   ℹ️  If needed, manually delete: https://github.com/{}/{}/releases", owner, repo));
-            }
-        }
-    }
-    
-    // 2. Rollback Git operations (Phase 2)
-    config.indent("🔄 Rolling back git changes...");
-    
-    let rollback_result = retry_with_backoff(
-        || async {
-            git_manager.rollback_release().await.or_else(|e| {
-                Ok(crate::git::RollbackResult {
-                    success: false,
-                    rolled_back_operations: Vec::new(),
-                    warnings: vec![format!("Git rollback failed: {}", e)],
-                    duration: std::time::Duration::from_secs(0),
-                })
+        .ok_or_else(|| {
+            ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+                version: "unknown".to_string(),
+                reason: "Could not find package.version in updated Cargo.toml".to_string(),
             })
-        },
-        config.retry_config.cleanup_operations,
-        "Git rollback",
-        config,
-        None,
-    ).await?;
+        })?;
     
-    // Handle rollback result
-    if rollback_result.success {
-        config.indent("   ✓ Rolled back git changes:");
-        for op in &rollback_result.rolled_back_operations {
-            config.indent(&format!("     - {}", op));
-        }
-        if !rollback_result.warnings.is_empty() {
-            for warning in &rollback_result.warnings {
-                cleanup_warnings.push(warning.clone());
-                config.indent(&format!("     ⚠️  {}", warning));
-            }
-        }
-    } else {
-        for warning in &rollback_result.warnings {
-            cleanup_warnings.push(warning.clone());
-            config.indent(&format!("   ⚠️  {}", warning));
-        }
-        config.indent("   ℹ️  If needed, manually run: git tag -d v{VERSION} && git push --delete origin v{VERSION}");
+    let parsed_version = semver::Version::parse(version_str).map_err(|e| {
+        ReleaseError::Version(crate::error::VersionError::InvalidVersion {
+            version: version_str.to_string(),
+            reason: e.to_string(),
+        })
+    })?;
+    
+    if &parsed_version != expected_version {
+        return Err(ReleaseError::Version(
+            crate::error::VersionError::InvalidVersion {
+                version: parsed_version.to_string(),
+                reason: format!("Expected version {} but found {}", expected_version, parsed_version),
+            },
+        ));
     }
     
-    config.println("");
-    if cleanup_warnings.is_empty() {
-        config.success_println("✓ Cleanup completed successfully");
-    } else {
-        config.warning_println(&format!("⚠️  Cleanup completed with {} warning(s)", cleanup_warnings.len()));
-    }
-    
-    // Show recovery suggestions from error
-    let suggestions = e.recovery_suggestions();
-    if !suggestions.is_empty() {
-        config.println("");
-        config.println("💡 Recovery suggestions:");
-        for suggestion in suggestions {
-            config.indent(&format!("  • {}", suggestion));
-        }
-    }
-    
-    config.println("");
-    Err(e)
+    Ok(())
 }

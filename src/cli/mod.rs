@@ -35,6 +35,6 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), String> {
 
 /// Create runtime configuration from arguments
 #[allow(dead_code)] // Public API - preserved for external consumers
-pub fn create_runtime_config(args: &Args) -> RuntimeConfig {
-    RuntimeConfig::from(args)
+pub fn create_runtime_config(_args: &Args) -> RuntimeConfig {
+    RuntimeConfig::new()
 }
