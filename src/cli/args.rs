@@ -90,35 +90,7 @@ impl RuntimeConfig {
         self.output.success(message);
     }
 
-    /// Print success message (alias for success_println for convenience)
-    pub fn success(&self, message: &str) {
-        self.output.success(message);
-    }
 
-    /// Print warning message (alias for warning_println for convenience)
-    pub fn warn(&self, message: &str) {
-        self.output.warn(message);
-    }
-
-    /// Print error message (always shown, alias for error_println)
-    pub fn error(&self, message: &str) {
-        self.output.error(message);
-    }
-
-    /// Print info message
-    pub fn info(&self, message: &str) {
-        self.output.info(message);
-    }
-
-    /// Print progress message
-    pub fn progress(&self, message: &str) {
-        self.output.progress(message);
-    }
-
-    /// Print section header
-    pub fn section(&self, title: &str) {
-        self.output.section(title);
-    }
 
     /// Print indented text
     pub fn indent(&self, message: &str) {

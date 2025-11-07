@@ -27,20 +27,6 @@ pub(super) fn parse_github_repo(repo_str: Option<&str>) -> Result<(String, Strin
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
-/// Parse GitHub repo string "owner/repo"
-pub(super) fn parse_github_repo_string(repo_str: &str) -> Result<(String, String)> {
-    let parts: Vec<&str> = repo_str.split('/').collect();
-    if parts.len() != 2 {
-        return Err(ReleaseError::Cli(CliError::InvalidArguments {
-            reason: format!(
-                "Invalid GitHub repository format: '{}'. Expected: owner/repo",
-                repo_str
-            ),
-        }));
-    }
-    Ok((parts[0].to_string(), parts[1].to_string()))
-}
-
 /// Parse GitHub owner/repo from git remote URL using proper URL parsing
 /// 
 /// Supports all Git URL formats:

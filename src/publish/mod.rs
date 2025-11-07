@@ -8,4 +8,4 @@
 
 mod cargo_ops;
 
-pub use cargo_ops::{CargoPublisher, PublishConfig, PublishResult};
+pub use cargo_ops::PublishResult;

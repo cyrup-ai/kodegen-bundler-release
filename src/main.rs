@@ -23,7 +23,7 @@ use std::process;
 ///
 /// This struct eliminates the need for unsafe `std::env::set_var()` calls
 /// by storing parsed values and providing safe access methods.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct EnvConfig {
     /// Variables parsed from .zshrc file
     zshrc_vars: HashMap<String, String>,
@@ -47,14 +47,6 @@ impl EnvConfig {
     /// Check if an environment variable is set (in zshrc or actual env)
     pub fn is_set(&self, key: &str) -> bool {
         self.zshrc_vars.contains_key(key) || std::env::var(key).is_ok()
-    }
-}
-
-impl Default for EnvConfig {
-    fn default() -> Self {
-        Self {
-            zshrc_vars: HashMap::new(),
-        }
     }
 }
 

@@ -151,6 +151,7 @@ impl GitHubReleaseManager {
     }
 
     /// Delete a release (for rollback)
+    #[allow(dead_code)]
     pub async fn delete_release(&self, release_id: u64) -> Result<()> {
         kodegen_tools_github::delete_release(
             self.client.inner().clone(),
@@ -175,6 +176,7 @@ impl GitHubReleaseManager {
     /// - `Ok(true)` - Release exists
     /// - `Ok(false)` - Release does not exist  
     /// - `Err(_)` - Network or authentication error
+    #[allow(dead_code)]
     pub async fn release_exists(&self, version: &Version) -> Result<bool> {
         let tag_name = format!("v{}", version);
         
@@ -200,6 +202,7 @@ impl GitHubReleaseManager {
     /// # Returns
     /// - `Ok(())` - Release deleted or didn't exist
     /// - `Err(_)` - Network or authentication error
+    #[allow(dead_code)]
     pub async fn cleanup_existing_release(&self, version: &Version) -> Result<()> {
         let tag_name = format!("v{}", version);
         

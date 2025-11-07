@@ -8,5 +8,5 @@ mod dependency;
 mod validator;
 
 pub use analyzer::{
-    PackageConfig, PackageInfo, SharedWorkspaceInfo, WorkspaceInfo,
+    PackageInfo, SharedWorkspaceInfo, WorkspaceInfo,
 };
