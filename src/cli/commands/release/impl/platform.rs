@@ -178,6 +178,7 @@ pub async fn bundle_native_platform(
     
     // Call bundler with explicit output path
     // Bundler will create parent directories and move artifact there
+    // NOTE: Version is read from Cargo.toml in release_clone_path, not passed as argument
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
         .arg(ctx.release_clone_path)
@@ -185,8 +186,6 @@ pub async fn bundle_native_platform(
         .arg(platform)
         .arg("--binary-name")
         .arg(ctx.binary_name)
-        .arg("--version")
-        .arg(ctx.new_version.to_string())
         .arg("--output-binary")
         .arg(&output_path)  // ← CALLER SPECIFIES PATH
         .arg("--no-build")
@@ -266,6 +265,7 @@ pub async fn bundle_docker_platform(
     
     // Call bundler with explicit output path (bundler handles Docker internally)
     // Bundler will create parent directories and move artifact there
+    // NOTE: Version is read from Cargo.toml in release_clone_path, not passed as argument
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
         .arg(ctx.release_clone_path)
@@ -273,8 +273,6 @@ pub async fn bundle_docker_platform(
         .arg(platform)
         .arg("--binary-name")
         .arg(ctx.binary_name)
-        .arg("--version")
-        .arg(ctx.new_version.to_string())
         .arg("--output-binary")
         .arg(&output_path)  // ← CALLER SPECIFIES PATH
         .arg("--no-build")
