@@ -140,6 +140,9 @@ pub struct GitHubState {
     pub draft: bool,
     /// Whether this was a prerelease
     pub prerelease: bool,
+    /// Uploaded artifact filenames (for resume capability)
+    #[serde(default)]
+    pub uploaded_artifacts: Vec<String>,
 }
 
 /// Publishing state
@@ -423,6 +426,7 @@ impl ReleaseState {
                 html_url: Some(result.html_url.clone()),
                 draft: result.draft,
                 prerelease: result.prerelease,
+                uploaded_artifacts: Vec::new(),
             });
         }
         self.updated_at = chrono::Utc::now();

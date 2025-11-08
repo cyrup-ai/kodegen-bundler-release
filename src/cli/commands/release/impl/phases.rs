@@ -276,14 +276,15 @@ pub async fn execute_phases_with_retry(
         docker_platforms.len()
     ));
 
-    let mut all_artifact_paths: Vec<std::path::PathBuf> = Vec::new();
-
-    // Step 3: Install bundler and bundle all platforms
+    // Step 3: Install bundler and bundle all platforms with incremental upload
+    let mut total_artifacts_created = 0;
+    let mut total_artifacts_uploaded = 0;
+    
     if !native_platforms.is_empty() || !docker_platforms.is_empty() {
         // Ensure bundler is installed from GitHub
         let bundler_binary = ensure_bundler_installed(ctx).await?;
 
-        // Step 4: Bundle native platforms
+        // Step 4: Bundle and upload native platforms
         for platform in &native_platforms {
             ctx.config.verbose_println(&format!("\n   Building {} (native)...", platform));
 
@@ -293,10 +294,21 @@ pub async fn execute_phases_with_retry(
                 platform,
             ).await?;
 
-            all_artifact_paths.extend(artifacts);
+            total_artifacts_created += artifacts.len();
+
+            // Upload immediately after bundling
+            let uploaded = upload_artifacts_incrementally(
+                ctx,
+                release_state,
+                release_id,
+                &artifacts,
+                platform,
+            ).await?;
+            
+            total_artifacts_uploaded += uploaded;
         }
 
-        // Step 5: Bundle Docker platforms
+        // Step 5: Bundle and upload Docker platforms
         for platform in &docker_platforms {
             ctx.config.verbose_println(&format!("\n   Building {} (Docker)...", platform));
 
@@ -306,12 +318,23 @@ pub async fn execute_phases_with_retry(
                 platform,
             ).await?;
 
-            all_artifact_paths.extend(artifacts);
+            total_artifacts_created += artifacts.len();
+
+            // Upload immediately after bundling
+            let uploaded = upload_artifacts_incrementally(
+                ctx,
+                release_state,
+                release_id,
+                &artifacts,
+                platform,
+            ).await?;
+            
+            total_artifacts_uploaded += uploaded;
         }
     }
 
     // Step 6: Verify artifacts were created
-    if all_artifact_paths.is_empty() {
+    if total_artifacts_created == 0 {
         return Err(ReleaseError::Cli(CliError::ExecutionFailed {
             command: "bundle".to_string(),
             reason: "No artifacts were created".to_string(),
@@ -320,31 +343,13 @@ pub async fn execute_phases_with_retry(
 
     ctx.config.success_println(&format!(
         "✓ Created {} artifact(s) across {} platform(s)",
-        all_artifact_paths.len(),
+        total_artifacts_created,
         all_platforms.len()
     ));
-    
-    // ===== PHASE 6: UPLOAD ARTIFACTS TO GITHUB RELEASE =====
-    if !all_artifact_paths.is_empty() {
-        ctx.config.println("☁️  Uploading artifacts to GitHub release...");
-        
-        let uploaded_urls = ctx.github_manager
-            .upload_artifacts(
-                release_id,
-                &all_artifact_paths,
-                ctx.new_version,
-                ctx.config,
-            )
-            .await
-            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-                command: "upload artifacts".to_string(),
-                reason: e.to_string(),
-            }))?;
-        
-        ctx.config.success_println(&format!("✓ Uploaded {} artifacts to GitHub", uploaded_urls.len()));
-    } else {
-        ctx.config.warning_println("⚠️  No artifacts created - skipping upload");
-    }
+    ctx.config.success_println(&format!(
+        "✓ Uploaded {} artifact(s) to GitHub release",
+        total_artifacts_uploaded
+    ));
     
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
     if release_state.has_completed(crate::state::ReleasePhase::GitHubPublish) {
@@ -437,4 +442,70 @@ pub async fn execute_phases_with_retry(
     }
     
     Ok(())
+}
+
+/// Upload artifacts incrementally with state tracking for resume capability
+async fn upload_artifacts_incrementally(
+    ctx: &ReleasePhaseContext<'_>,
+    release_state: &mut ReleaseState,
+    release_id: u64,
+    artifacts: &[std::path::PathBuf],
+    platform: &str,
+) -> Result<usize> {
+    let mut uploaded_count = 0;
+    
+    for artifact_path in artifacts {
+        let filename = artifact_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| {
+                ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "get filename".to_string(),
+                    reason: format!("Invalid filename in path: {}", artifact_path.display()),
+                })
+            })?;
+        
+        // Check if already uploaded (from state tracking)
+        let already_uploaded = release_state
+            .github_state
+            .as_ref()
+            .map(|gh| gh.uploaded_artifacts.contains(&filename.to_string()))
+            .unwrap_or(false);
+        
+        if already_uploaded {
+            ctx.config.indent(&format!("⏭ {} (already uploaded)", filename));
+            continue;
+        }
+        
+        // Upload this artifact
+        ctx.config.indent(&format!("☁️  Uploading {}...", filename));
+        
+        let uploaded_urls = ctx.github_manager
+            .upload_artifacts(
+                release_id,
+                &[artifact_path.clone()],
+                ctx.new_version,
+                ctx.config,
+            )
+            .await
+            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("upload_{}", platform),
+                reason: e.to_string(),
+            }))?;
+        
+        if !uploaded_urls.is_empty() {
+            // Track uploaded artifact in state
+            if let Some(github_state) = &mut release_state.github_state {
+                github_state.uploaded_artifacts.push(filename.to_string());
+            }
+            
+            // Save state after each successful upload
+            crate::state::save_release_state(release_state).await?;
+            
+            ctx.config.indent(&format!("✓ Uploaded {}", filename));
+            uploaded_count += 1;
+        }
+    }
+    
+    Ok(uploaded_count)
 }
