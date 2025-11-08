@@ -163,8 +163,24 @@ pub async fn bundle_native_platform(
     platform: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
     // Detect target architecture
-    let arch = detect_target_architecture()?;
-    
+    // For DMG on macOS, check if universal binaries are available
+    let arch = {
+        #[cfg(target_os = "macos")]
+        if platform == "dmg" {
+            let universal_dir = ctx.release_clone_path.join("target/universal/release");
+            if universal_dir.exists() {
+                "universal"
+            } else {
+                detect_target_architecture()?
+            }
+        } else {
+            detect_target_architecture()?
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        detect_target_architecture()?
+    };
+
     // Construct output path with explicit architecture
     // Note: We do NOT create the artifacts directory - bundler handles this
     let filename = construct_output_filename(ctx, platform, arch)?;
@@ -179,17 +195,24 @@ pub async fn bundle_native_platform(
     // Call bundler with explicit output path
     // Bundler will create parent directories and move artifact there
     // NOTE: Version is read from Cargo.toml in release_clone_path, not passed as argument
-    let output = std::process::Command::new(bundler_binary)
-        .arg("--repo-path")
+    let mut cmd = std::process::Command::new(bundler_binary);
+    cmd.arg("--repo-path")
         .arg(ctx.release_clone_path)
         .arg("--platform")
         .arg(platform)
         .arg("--binary-name")
         .arg(ctx.binary_name)
         .arg("--output-binary")
-        .arg(&output_path)  // ← CALLER SPECIFIES PATH
-        .arg("--no-build")
-        .output()
+        .arg(&output_path)
+        .arg("--no-build");
+
+    // For universal binaries, pass --target universal to bundler
+    if arch == "universal" {
+        cmd.arg("--target").arg("universal");
+        ctx.config.verbose_println("   Using universal binaries for DMG");
+    }
+
+    let output = cmd.output()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
             reason: e.to_string(),

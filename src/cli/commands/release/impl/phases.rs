@@ -156,36 +156,109 @@ pub async fn execute_phases_with_retry(
     
     let build_timeout = Duration::from_secs(timeout_config.build_timeout_secs);
     
-    let build_output = timeout(
-        build_timeout,
-        Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .current_dir(ctx.release_clone_path)
-            .output()
-    )
-    .await
-    .map_err(|_| ReleaseError::Cli(CliError::ExecutionFailed {
-        command: "cargo build --release".to_string(),
-        reason: format!(
-            "Build timed out after {} seconds. Try setting KODEGEN_BUILD_TIMEOUT to a higher value.",
-            timeout_config.build_timeout_secs
-        ),
-    }))?
-    .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
-        command: "cargo build --release".to_string(),
-        reason: e.to_string(),
-    }))?;
-    
-    if !build_output.status.success() {
-        return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+    // On macOS, build for both architectures to enable universal binaries
+    #[cfg(target_os = "macos")]
+    let build_targets = vec!["x86_64-apple-darwin", "aarch64-apple-darwin"];
+
+    #[cfg(not(target_os = "macos"))]
+    let build_targets: Vec<&str> = vec![];
+
+    if build_targets.is_empty() {
+        // Single-target build (non-macOS)
+        let build_output = timeout(
+            build_timeout,
+            Command::new("cargo")
+                .arg("build")
+                .arg("--release")
+                .current_dir(ctx.release_clone_path)
+                .output()
+        )
+        .await
+        .map_err(|_| ReleaseError::Cli(CliError::ExecutionFailed {
             command: "cargo build --release".to_string(),
-            reason: String::from_utf8_lossy(&build_output.stderr).to_string(),
-        }));
+            reason: format!(
+                "Build timed out after {} seconds. Try setting KODEGEN_BUILD_TIMEOUT to a higher value.",
+                timeout_config.build_timeout_secs
+            ),
+        }))?
+        .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+            command: "cargo build --release".to_string(),
+            reason: e.to_string(),
+        }))?;
+
+        if !build_output.status.success() {
+            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "cargo build --release".to_string(),
+                reason: String::from_utf8_lossy(&build_output.stderr).to_string(),
+            }));
+        }
+    } else {
+        // Multi-target build (macOS)
+        for target in &build_targets {
+            ctx.config.verbose_println(&format!("   Building for {}...", target));
+
+            let build_output = timeout(
+                build_timeout,
+                Command::new("cargo")
+                    .arg("build")
+                    .arg("--release")
+                    .arg("--target")
+                    .arg(target)
+                    .current_dir(ctx.release_clone_path)
+                    .output()
+            )
+            .await
+            .map_err(|_| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("cargo build --release --target {}", target),
+                reason: format!(
+                    "Build timed out after {} seconds. Try setting KODEGEN_BUILD_TIMEOUT to a higher value.",
+                    timeout_config.build_timeout_secs
+                ),
+            }))?
+            .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
+                command: format!("cargo build --release --target {}", target),
+                reason: e.to_string(),
+            }))?;
+
+            if !build_output.status.success() {
+                return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: format!("cargo build --release --target {}", target),
+                    reason: String::from_utf8_lossy(&build_output.stderr).to_string(),
+                }));
+            }
+        }
     }
-    
+
     ctx.config.success_println("✓ Built release binaries");
-    
+
+    // ===== PHASE 4.5: CREATE UNIVERSAL BINARIES (macOS only) =====
+    #[cfg(target_os = "macos")]
+    {
+        ctx.config.println("🔄 Creating universal binaries (Intel + Apple Silicon)...");
+
+        let workspace_root = ctx.release_clone_path;
+        let universal_output = workspace_root.join("target/universal/release");
+
+        // Import the universal binary creator from bundler
+        use kodegen_bundler_bundle::bundler::platform::macos::universal::create_universal_binaries;
+
+        match create_universal_binaries(&workspace_root, &universal_output) {
+            Ok(binaries) => {
+                ctx.config.success_println(&format!(
+                    "✓ Created {} universal binaries",
+                    binaries.len()
+                ));
+            }
+            Err(e) => {
+                ctx.config.verbose_println(&format!(
+                    "   Warning: Could not create universal binaries: {}",
+                    e
+                ));
+                ctx.config.verbose_println("   Will bundle architecture-specific builds instead");
+            }
+        }
+    }
+
     // ===== PHASE 5: CREATE PLATFORM BUNDLES =====
     ctx.config.println("📦 Creating platform bundles...");
 
