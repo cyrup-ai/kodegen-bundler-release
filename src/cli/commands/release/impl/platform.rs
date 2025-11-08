@@ -289,6 +289,8 @@ pub async fn bundle_docker_platform(
     // Call bundler with explicit output path (bundler handles Docker internally)
     // Bundler will create parent directories and move artifact there
     // NOTE: Version is read from Cargo.toml in release_clone_path, not passed as argument
+    // NOTE: We do NOT pass --no-build for Docker platforms because the bundler needs to
+    //       build Linux binaries inside the container (we only built macOS binaries on host)
     let output = std::process::Command::new(bundler_binary)
         .arg("--repo-path")
         .arg(ctx.release_clone_path)
@@ -298,7 +300,6 @@ pub async fn bundle_docker_platform(
         .arg(ctx.binary_name)
         .arg("--output-binary")
         .arg(&output_path)  // ← CALLER SPECIFIES PATH
-        .arg("--no-build")
         .output()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: format!("bundle_{}", platform),
