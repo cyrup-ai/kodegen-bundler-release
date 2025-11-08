@@ -242,7 +242,7 @@ pub async fn execute_phases_with_retry(
         // Import the universal binary creator from bundler
         use kodegen_bundler_bundle::bundler::platform::macos::universal::create_universal_binaries;
 
-        match create_universal_binaries(&workspace_root, &universal_output) {
+        match create_universal_binaries(workspace_root, &universal_output) {
             Ok(binaries) => {
                 ctx.config.success_println(&format!(
                     "✓ Created {} universal binaries",
@@ -483,7 +483,7 @@ async fn upload_artifacts_incrementally(
         let uploaded_urls = ctx.github_manager
             .upload_artifacts(
                 release_id,
-                &[artifact_path.clone()],
+                std::slice::from_ref(artifact_path),
                 ctx.new_version,
                 ctx.config,
             )
