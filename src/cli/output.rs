@@ -15,6 +15,16 @@ pub struct OutputManager {
     quiet: bool,
 }
 
+impl Clone for OutputManager {
+    fn clone(&self) -> Self {
+        Self {
+            bufwtr: BufferWriter::stdout(ColorChoice::Auto),
+            verbose: self.verbose,
+            quiet: self.quiet,
+        }
+    }
+}
+
 impl OutputManager {
     /// Create a new output manager
     pub fn new(verbose: bool, quiet: bool) -> Self {

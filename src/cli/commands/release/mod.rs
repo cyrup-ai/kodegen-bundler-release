@@ -57,10 +57,6 @@ pub(super) async fn execute_release(
     };
     let temp_dir_pathbuf = temp_dir.to_path_buf();
 
-    // Copy embedded .devcontainer for Docker builds
-    kodegen_bundler_bundle::cli::commands::copy_embedded_devcontainer(&temp_dir_pathbuf)?;
-    config.verbose_println("✓ Embedded .devcontainer resources ready");
-
     // Clean up any stale tracking from crashed previous releases
     match super::temp_clone::cleanup_stale_tracking() {
         Ok(count) if count > 0 => {

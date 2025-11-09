@@ -43,7 +43,7 @@ impl Args {
 }
 
 /// Configuration derived from command line arguments
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     /// Output manager for colored terminal output
     output: super::OutputManager,
@@ -55,6 +55,11 @@ impl RuntimeConfig {
         Self {
             output: super::OutputManager::new(false, false),
         }
+    }
+
+    /// Get a reference to the output manager
+    pub fn output(&self) -> &super::OutputManager {
+        &self.output
     }
 }
 

@@ -39,9 +39,6 @@ kodegen_tools_github = { version = "0.1" }
 # Code signing for macOS artifacts
 kodegen_bundler_sign = { version = "0.1" }
 
-# Bundler with embedded .devcontainer resources
-kodegen_bundler_bundle = { path = "../kodegen-bundler-bundle" }
-
 # Binary content for asset upload
 bytes = "1"
 

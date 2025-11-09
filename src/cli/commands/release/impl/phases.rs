@@ -8,7 +8,7 @@ use crate::state::ReleaseState;
 
 use super::context::ReleasePhaseContext;
 use super::platform::{
-    bundle_docker_platform, bundle_native_platform, ensure_bundler_installed,
+    bundle_platform, ensure_bundler_installed,
     get_docker_platforms, get_native_platforms, get_platforms_to_build,
 };
 use super::retry::retry_with_backoff;
@@ -231,34 +231,6 @@ pub async fn execute_phases_with_retry(
 
     ctx.config.success_println("✓ Built release binaries");
 
-    // ===== PHASE 4.5: CREATE UNIVERSAL BINARIES (macOS only) =====
-    #[cfg(target_os = "macos")]
-    {
-        ctx.config.println("🔄 Creating universal binaries (Intel + Apple Silicon)...");
-
-        let workspace_root = ctx.release_clone_path;
-        let universal_output = workspace_root.join("target/universal/release");
-
-        // Import the universal binary creator from bundler
-        use kodegen_bundler_bundle::bundler::platform::macos::universal::create_universal_binaries;
-
-        match create_universal_binaries(workspace_root, &universal_output) {
-            Ok(binaries) => {
-                ctx.config.success_println(&format!(
-                    "✓ Created {} universal binaries",
-                    binaries.len()
-                ));
-            }
-            Err(e) => {
-                ctx.config.verbose_println(&format!(
-                    "   Warning: Could not create universal binaries: {}",
-                    e
-                ));
-                ctx.config.verbose_println("   Will bundle architecture-specific builds instead");
-            }
-        }
-    }
-
     // ===== PHASE 5: CREATE PLATFORM BUNDLES =====
     ctx.config.println("📦 Creating platform bundles...");
 
@@ -280,39 +252,18 @@ pub async fn execute_phases_with_retry(
     let mut total_artifacts_created = 0;
     let mut total_artifacts_uploaded = 0;
     
-    if !native_platforms.is_empty() || !docker_platforms.is_empty() {
+    if !all_platforms.is_empty() {
         // Ensure bundler is installed from GitHub
         let bundler_binary = ensure_bundler_installed(ctx).await?;
 
-        // Step 4: Bundle and upload native platforms
-        for platform in &native_platforms {
-            ctx.config.verbose_println(&format!("\n   Building {} (native)...", platform));
-
-            let artifacts = bundle_native_platform(
-                ctx,
-                &bundler_binary,
-                platform,
-            ).await?;
-
-            total_artifacts_created += artifacts.len();
-
-            // Upload immediately after bundling
-            let uploaded = upload_artifacts_incrementally(
-                ctx,
-                release_state,
-                release_id,
-                &artifacts,
-                platform,
-            ).await?;
+        // Step 4: Bundle and upload all platforms
+        for platform in &all_platforms {
+            let is_native = native_platforms.contains(&platform);
+            let platform_type = if is_native { "native" } else { "Docker" };
             
-            total_artifacts_uploaded += uploaded;
-        }
+            ctx.config.verbose_println(&format!("\n   Building {} ({})...", platform, platform_type));
 
-        // Step 5: Bundle and upload Docker platforms
-        for platform in &docker_platforms {
-            ctx.config.verbose_println(&format!("\n   Building {} (Docker)...", platform));
-
-            let artifacts = bundle_docker_platform(
+            let artifacts = bundle_platform(
                 ctx,
                 &bundler_binary,
                 platform,
