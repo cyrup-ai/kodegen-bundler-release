@@ -354,14 +354,14 @@ impl GitHubReleaseManager {
         let mut uploaded_urls = Vec::new();
 
         // Query existing assets ONCE before upload loop
-        runtime_config.verbose_println("   Checking for existing assets...");
+        runtime_config.verbose_println("   Checking for existing assets...").expect("Failed to write to stdout");
         let existing_assets = self.get_release_asset_names(version).await?;
 
         if !existing_assets.is_empty() {
             runtime_config.verbose_println(&format!(
                 "   Found {} existing asset(s)",
                 existing_assets.len()
-            ));
+            )).expect("Failed to write to stdout");
         }
 
         for artifact_path in artifact_paths {
@@ -370,7 +370,7 @@ impl GitHubReleaseManager {
                 runtime_config.warning_println(&format!(
                     "⚠️  Skipping non-file artifact: {}",
                     artifact_path.display()
-                ));
+                )).expect("Failed to write to stdout");
                 continue;
             }
 
@@ -386,7 +386,7 @@ impl GitHubReleaseManager {
 
             // IDEMPOTENCY: Skip if already uploaded
             if existing_assets.contains(filename) {
-                runtime_config.indent(&format!("✓ Skipping {} (already uploaded)", filename));
+                runtime_config.indent(&format!("✓ Skipping {} (already uploaded)", filename)).expect("Failed to write to stdout");
                 continue;
             }
 
@@ -417,7 +417,7 @@ impl GitHubReleaseManager {
             // Extract download URL from asset
             uploaded_urls.push(asset.browser_download_url.to_string());
 
-            runtime_config.indent(&format!("✓ Uploaded: {} ({} bytes)", filename, asset.size));
+            runtime_config.indent(&format!("✓ Uploaded: {} ({} bytes)", filename, asset.size)).expect("Failed to write to stdout");
         }
 
         Ok(uploaded_urls)

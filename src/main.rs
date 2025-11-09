@@ -150,9 +150,9 @@ async fn async_main(env_config: EnvConfig) -> i32 {
             // Show recovery suggestions for critical errors
             let suggestions = e.recovery_suggestions();
             if !suggestions.is_empty() {
-                output.println("\n💡 Recovery suggestions:");
+                let _ = output.println("\n💡 Recovery suggestions:");
                 for suggestion in suggestions {
-                    output.indent(&suggestion);
+                    let _ = output.indent(&suggestion);
                 }
             }
 

@@ -29,18 +29,18 @@ pub async fn execute_phases_with_retry(
     let timeout_config = CargoTimeoutConfig::default();
     // ===== PHASE 2: GIT OPERATIONS (with retry) =====
     let git_result: Option<crate::git::ReleaseResult> = if release_state.has_completed(crate::state::ReleasePhase::GitOperations) {
-        ctx.config.println("✓ Skipping git operations (already completed)");
+        ctx.config.println("✓ Skipping git operations (already completed)").expect("Failed to write to stdout");
         if let Some(ref git_state) = release_state.git_state {
             if let Some(ref commit) = git_state.release_commit {
-                ctx.config.indent(&format!("   Commit: {}", commit.short_hash));
+                ctx.config.indent(&format!("   Commit: {}", commit.short_hash)).expect("Failed to write to stdout");
             }
             if let Some(ref tag) = git_state.release_tag {
-                ctx.config.indent(&format!("   Tag: {}", tag.name));
+                ctx.config.indent(&format!("   Tag: {}", tag.name)).expect("Failed to write to stdout");
             }
         }
         None
     } else {
-        ctx.config.println("📝 Creating git commit...");
+        ctx.config.println("📝 Creating git commit...").expect("Failed to write to stdout");
         
         let result = retry_with_backoff(
             || ctx.git_manager.perform_release(ctx.new_version, true),  // Always push
@@ -50,10 +50,10 @@ pub async fn execute_phases_with_retry(
             None,
         ).await?;
         
-        ctx.config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message));
-        ctx.config.success_println(&format!("✓ Tagged: {}", result.tag.name));
-        ctx.config.success_println("✓ Pushed to origin");
-        
+        ctx.config.success_println(&format!("✓ Committed: \"{}\"", result.commit.message)).expect("Failed to write to stdout");
+        ctx.config.success_println(&format!("✓ Tagged: {}", result.tag.name)).expect("Failed to write to stdout");
+        ctx.config.success_println("✓ Pushed to origin").expect("Failed to write to stdout");
+
         // Save state after git operations complete
         release_state.set_phase(crate::state::ReleasePhase::GitOperations);
         release_state.add_checkpoint(
@@ -63,13 +63,13 @@ pub async fn execute_phases_with_retry(
             true,  // rollback_capable
         );
         crate::state::save_release_state(release_state).await?;
-        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)").expect("Failed to write to stdout");
         
         Some(result)
     };
     
     // ===== PHASE 3 PRECHECK: VERIFY GITHUB API ACCESS =====
-    ctx.config.println("🔍 Verifying GitHub API access...");
+    ctx.config.println("🔍 Verifying GitHub API access...").expect("Failed to write to stdout");
 
     if !ctx.github_manager.test_connection().await? {
         return Err(ReleaseError::Cli(CliError::InvalidArguments {
@@ -77,14 +77,14 @@ pub async fn execute_phases_with_retry(
         }));
     }
 
-    ctx.config.success_println("✓ GitHub API authenticated");
-    ctx.config.println("");
+    ctx.config.success_println("✓ GitHub API authenticated").expect("Failed to write to stdout");
+    ctx.config.println("").expect("Failed to write to stdout");
 
     // ===== PHASE 3: CREATE GITHUB DRAFT RELEASE (with retry) =====
     let release_id = if release_state.has_completed(crate::state::ReleasePhase::GitHubRelease) {
-        ctx.config.println("✓ Skipping GitHub release creation (already completed)");
+        ctx.config.println("✓ Skipping GitHub release creation (already completed)").expect("Failed to write to stdout");
         if let Some(ref github_state) = release_state.github_state {
-            ctx.config.indent(&format!("   Release: {}", github_state.html_url.as_ref().unwrap_or(&"N/A".to_string())));
+            ctx.config.indent(&format!("   Release: {}", github_state.html_url.as_ref().unwrap_or(&"N/A".to_string()))).expect("Failed to write to stdout");
             github_state.release_id.ok_or_else(|| {
                 ReleaseError::State(crate::error::StateError::Corrupted {
                     reason: "GitHubRelease checkpoint exists but release_id is None".to_string(),
@@ -96,8 +96,8 @@ pub async fn execute_phases_with_retry(
             }));
         }
     } else {
-        ctx.config.println("🚀 Creating GitHub draft release...");
-        
+        ctx.config.println("🚀 Creating GitHub draft release...").expect("Failed to write to stdout");
+
         // Get commit hash from git_result or from stored state
         let commit_hash = if let Some(ref result) = git_result {
             result.commit.hash.clone()
@@ -125,12 +125,12 @@ pub async fn execute_phases_with_retry(
             None,
         ).await?;
         
-        ctx.config.success_println(&format!("✓ Created draft release: {}", release_result.html_url));
-        
+        ctx.config.success_println(&format!("✓ Created draft release: {}", release_result.html_url)).expect("Failed to write to stdout");
+
         // Track release in state for potential cleanup
         release_state.set_github_state(ctx.github_owner.to_string(), ctx.github_repo_name.to_string(), Some(&release_result));
         let release_id = release_result.release_id;
-        
+
         // Save state after GitHub release created
         release_state.set_phase(crate::state::ReleasePhase::GitHubRelease);
         release_state.add_checkpoint(
@@ -143,13 +143,13 @@ pub async fn execute_phases_with_retry(
             true,  // rollback_capable
         );
         crate::state::save_release_state(release_state).await?;
-        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)").expect("Failed to write to stdout");
         
         release_id
     };
     
     // ===== PHASE 4: BUILD RELEASE BINARIES =====
-    ctx.config.println("🔨 Building release binaries...");
+    ctx.config.println("🔨 Building release binaries...").expect("Failed to write to stdout");
     
     use tokio::process::Command;
     use tokio::time::{timeout, Duration};
@@ -195,7 +195,7 @@ pub async fn execute_phases_with_retry(
     } else {
         // Multi-target build (macOS)
         for target in &build_targets {
-            ctx.config.verbose_println(&format!("   Building for {}...", target));
+            ctx.config.verbose_println(&format!("   Building for {}...", target)).expect("Failed to write to stdout");
 
             let build_output = timeout(
                 build_timeout,
@@ -229,14 +229,14 @@ pub async fn execute_phases_with_retry(
         }
     }
 
-    ctx.config.success_println("✓ Built release binaries");
+    ctx.config.success_println("✓ Built release binaries").expect("Failed to write to stdout");
 
     // ===== PHASE 5: CREATE PLATFORM BUNDLES =====
-    ctx.config.println("📦 Creating platform bundles...");
+    ctx.config.println("📦 Creating platform bundles...").expect("Failed to write to stdout");
 
     // Step 1: Determine which platforms to build
     let all_platforms = get_platforms_to_build();
-    ctx.config.verbose_println(&format!("   Building {} platform(s)", all_platforms.len()));
+    ctx.config.verbose_println(&format!("   Building {} platform(s)", all_platforms.len())).expect("Failed to write to stdout");
 
     // Step 2: Separate native vs Docker platforms
     let native_platforms = get_native_platforms(&all_platforms);
@@ -246,7 +246,7 @@ pub async fn execute_phases_with_retry(
         "   Native: {} platform(s), Docker: {} platform(s)",
         native_platforms.len(),
         docker_platforms.len()
-    ));
+    )).expect("Failed to write to stdout");
 
     // Step 3: Install bundler and bundle all platforms with incremental upload
     let mut total_artifacts_created = 0;
@@ -258,10 +258,10 @@ pub async fn execute_phases_with_retry(
 
         // Step 4: Bundle and upload all platforms
         for platform in &all_platforms {
-            let is_native = native_platforms.contains(&platform);
+            let is_native = native_platforms.contains(platform);
             let platform_type = if is_native { "native" } else { "Docker" };
-            
-            ctx.config.verbose_println(&format!("\n   Building {} ({})...", platform, platform_type));
+
+            ctx.config.verbose_println(&format!("\n   Building {} ({})...", platform, platform_type)).expect("Failed to write to stdout");
 
             let artifacts = bundle_platform(
                 ctx,
@@ -296,17 +296,17 @@ pub async fn execute_phases_with_retry(
         "✓ Created {} artifact(s) across {} platform(s)",
         total_artifacts_created,
         all_platforms.len()
-    ));
+    )).expect("Failed to write to stdout");
     ctx.config.success_println(&format!(
         "✓ Uploaded {} artifact(s) to GitHub release",
         total_artifacts_uploaded
-    ));
+    )).expect("Failed to write to stdout");
     
     // ===== PHASE 7: PUBLISH RELEASE (with retry) =====
     if release_state.has_completed(crate::state::ReleasePhase::GitHubPublish) {
-        ctx.config.println("✓ Skipping release publishing (already published)");
+        ctx.config.println("✓ Skipping release publishing (already published)").expect("Failed to write to stdout");
     } else {
-        ctx.config.println("🔍 Verifying release is ready to publish...");
+        ctx.config.println("🔍 Verifying release is ready to publish...").expect("Failed to write to stdout");
 
         if !ctx.github_manager.verify_release_is_draft(release_id).await? {
             return Err(ReleaseError::Cli(CliError::ExecutionFailed {
@@ -318,10 +318,10 @@ pub async fn execute_phases_with_retry(
             }));
         }
 
-        ctx.config.success_println("✓ Release verified as draft");
-        ctx.config.println("");
+        ctx.config.success_println("✓ Release verified as draft").expect("Failed to write to stdout");
+        ctx.config.println("").expect("Failed to write to stdout");
 
-        ctx.config.println("✅ Publishing GitHub release...");
+        ctx.config.println("✅ Publishing GitHub release...").expect("Failed to write to stdout");
         
         retry_with_backoff(
             || ctx.github_manager.publish_draft_release(release_id),
@@ -330,9 +330,9 @@ pub async fn execute_phases_with_retry(
             ctx.config,
             None,
         ).await?;
-        
-        ctx.config.success_println(&format!("✓ Published release v{}", ctx.new_version));
-        
+
+        ctx.config.success_println(&format!("✓ Published release v{}", ctx.new_version)).expect("Failed to write to stdout");
+
         // Save state after publishing
         release_state.set_phase(crate::state::ReleasePhase::GitHubPublish);
         release_state.add_checkpoint(
@@ -342,11 +342,11 @@ pub async fn execute_phases_with_retry(
             false,  // Can't unpublish
         );
         crate::state::save_release_state(release_state).await?;
-        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Release published)");
+        ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Release published)").expect("Failed to write to stdout");
     }
-    
+
     // ===== PHASE 8: PUBLISH TO CRATES.IO (with retry) =====
-    ctx.config.println("📦 Publishing to crates.io...");
+    ctx.config.println("📦 Publishing to crates.io...").expect("Failed to write to stdout");
     
     // Just use cargo publish directly - simpler and works
     let publish_result = retry_with_backoff(
@@ -366,7 +366,7 @@ pub async fn execute_phases_with_retry(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 // Check if already published (non-fatal)
                 if stderr.contains("already uploaded") {
-                    ctx.config.warning_println("⚠️  Package already published to crates.io");
+                    ctx.config.warning_println("⚠️  Package already published to crates.io").expect("Failed to write to stdout");
                     return Ok(());
                 }
                 Err(ReleaseError::Cli(CliError::ExecutionFailed {
@@ -383,11 +383,11 @@ pub async fn execute_phases_with_retry(
     
     match publish_result {
         Ok(()) => {
-            ctx.config.success_println(&format!("✓ Published v{} to crates.io", ctx.new_version));
+            ctx.config.success_println(&format!("✓ Published v{} to crates.io", ctx.new_version)).expect("Failed to write to stdout");
         }
         Err(e) => {
-            ctx.config.warning_println(&format!("⚠️  Publishing failed: {}", e));
-            ctx.config.warning_println("   GitHub release is still published successfully");
+            ctx.config.warning_println(&format!("⚠️  Publishing failed: {}", e)).expect("Failed to write to stdout");
+            ctx.config.warning_println("   GitHub release is still published successfully").expect("Failed to write to stdout");
             // Don't fail the entire release if crates.io publish fails
         }
     }
@@ -424,12 +424,12 @@ async fn upload_artifacts_incrementally(
             .unwrap_or(false);
         
         if already_uploaded {
-            ctx.config.indent(&format!("⏭ {} (already uploaded)", filename));
+            ctx.config.indent(&format!("⏭ {} (already uploaded)", filename)).expect("Failed to write to stdout");
             continue;
         }
-        
+
         // Upload this artifact
-        ctx.config.indent(&format!("☁️  Uploading {}...", filename));
+        ctx.config.indent(&format!("☁️  Uploading {}...", filename)).expect("Failed to write to stdout");
         
         let uploaded_urls = ctx.github_manager
             .upload_artifacts(
@@ -452,8 +452,8 @@ async fn upload_artifacts_incrementally(
             
             // Save state after each successful upload
             crate::state::save_release_state(release_state).await?;
-            
-            ctx.config.indent(&format!("✓ Uploaded {}", filename));
+
+            ctx.config.indent(&format!("✓ Uploaded {}", filename)).expect("Failed to write to stdout");
             uploaded_count += 1;
         }
     }

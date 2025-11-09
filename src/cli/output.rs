@@ -36,72 +36,54 @@ impl OutputManager {
     }
 
     /// Print an info message (normal output)
-    pub fn info(&self, message: &str) {
+    pub fn info(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan))).is_err()
-            || write!(&mut buffer, "ℹ ").is_err()
-            || buffer.reset().is_err()
-            || writeln!(&mut buffer, " {}", message).is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] ℹ  {}", message);
-        }
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)));
+        let _ = write!(&mut buffer, "ℹ ");
+        let _ = buffer.reset();
+        let _ = writeln!(&mut buffer, " {}", message);
+        self.bufwtr.print(&buffer)
     }
 
     /// Print a success message
-    pub fn success(&self, message: &str) {
+    pub fn success(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Green)).set_bold(true)).is_err()
-            || write!(&mut buffer, "✓").is_err()
-            || buffer.reset().is_err()
-            || writeln!(&mut buffer, " {}", message).is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] ✓ {}", message);
-        }
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Green)).set_bold(true));
+        let _ = write!(&mut buffer, "✓");
+        let _ = buffer.reset();
+        let _ = writeln!(&mut buffer, " {}", message);
+        self.bufwtr.print(&buffer)
     }
 
     /// Print a warning message
-    pub fn warn(&self, message: &str) {
+    pub fn warn(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_bold(true)).is_err()
-            || write!(&mut buffer, "⚠").is_err()
-            || buffer.reset().is_err()
-            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow))).is_err()
-            || writeln!(&mut buffer, " {}", message).is_err()
-            || buffer.reset().is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] ⚠ {}", message);
-        }
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_bold(true));
+        let _ = write!(&mut buffer, "⚠");
+        let _ = buffer.reset();
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)));
+        let _ = writeln!(&mut buffer, " {}", message);
+        let _ = buffer.reset();
+        self.bufwtr.print(&buffer)
     }
 
     /// Print an error message (always shown)
     pub fn error(&self, message: &str) {
         let bufwtr = BufferWriter::stderr(ColorChoice::Auto);
         let mut buffer = bufwtr.buffer();
-        
+
         // Try colored output to stderr
         if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Red)).set_bold(true)).is_err()
             || write!(&mut buffer, "✗").is_err()
@@ -117,99 +99,69 @@ impl OutputManager {
     }
 
     /// Print a verbose/debug message (only in verbose mode)
-    pub fn verbose(&self, message: &str) {
+    pub fn verbose(&self, message: &str) -> std::io::Result<()> {
         if !self.verbose || self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Blue))).is_err()
-            || write!(&mut buffer, "→").is_err()
-            || buffer.reset().is_err()
-            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::White))).is_err()
-            || writeln!(&mut buffer, " {}", message).is_err()
-            || buffer.reset().is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] → {}", message);
-        }
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Blue)));
+        let _ = write!(&mut buffer, "→");
+        let _ = buffer.reset();
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::White)));
+        let _ = writeln!(&mut buffer, " {}", message);
+        let _ = buffer.reset();
+        self.bufwtr.print(&buffer)
     }
 
     /// Print a progress message with spinner/activity indicator
-    pub fn progress(&self, message: &str) {
+    pub fn progress(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if buffer.set_color(ColorSpec::new().set_fg(Some(Color::Magenta))).is_err()
-            || write!(&mut buffer, "⋯").is_err()
-            || buffer.reset().is_err()
-            || writeln!(&mut buffer, " {}", message).is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] ⋯ {}", message);
-        }
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Magenta)));
+        let _ = write!(&mut buffer, "⋯");
+        let _ = buffer.reset();
+        let _ = writeln!(&mut buffer, " {}", message);
+        self.bufwtr.print(&buffer)
     }
 
     /// Print a section header
-    pub fn section(&self, title: &str) {
+    pub fn section(&self, title: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try colored output to stdout
-        if writeln!(&mut buffer).is_err()
-            || buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)).set_bold(true)).is_err()
-            || writeln!(&mut buffer, "═══ {} ═══", title).is_err()
-            || buffer.reset().is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] \n═══ {} ═══", title);
-        }
+        let _ = writeln!(&mut buffer);
+        let _ = buffer.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)).set_bold(true));
+        let _ = writeln!(&mut buffer, "═══ {} ═══", title);
+        let _ = buffer.reset();
+        self.bufwtr.print(&buffer)
     }
 
     /// Print indented text (for sub-items)
-    pub fn indent(&self, message: &str) {
+    pub fn indent(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try output to stdout
-        if writeln!(&mut buffer, "    {}", message).is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR]     {}", message);
-        }
+        let _ = writeln!(&mut buffer, "    {}", message);
+        self.bufwtr.print(&buffer)
     }
 
     /// Print a plain message (respects quiet mode)
-    pub fn println(&self, message: &str) {
+    pub fn println(&self, message: &str) -> std::io::Result<()> {
         if self.quiet {
-            return;
+            return Ok(());
         }
 
         let mut buffer = self.bufwtr.buffer();
-        
-        // Try output to stdout
-        if writeln!(&mut buffer, "{}", message).is_err()
-            || self.bufwtr.print(&buffer).is_err()
-        {
-            // Fallback: plain text to stderr
-            eprintln!("[OUTPUT ERROR] {}", message);
-        }
+        let _ = writeln!(&mut buffer, "{}", message);
+        self.bufwtr.print(&buffer)
     }
 
     /// Check if verbose mode is enabled

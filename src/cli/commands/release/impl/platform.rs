@@ -127,7 +127,7 @@ pub fn construct_output_filename(
 /// - Skips if already up-to-date
 /// - Rebuilds only if new commits exist
 pub async fn ensure_bundler_installed(ctx: &ReleasePhaseContext<'_>) -> Result<std::path::PathBuf> {
-    ctx.config.verbose_println("   Checking bundler installation from GitHub...");
+    ctx.config.verbose_println("   Checking bundler installation from GitHub...").expect("Failed to write to stdout");
 
     let install_status = std::process::Command::new("cargo")
         .arg("install")
@@ -147,7 +147,7 @@ pub async fn ensure_bundler_installed(ctx: &ReleasePhaseContext<'_>) -> Result<s
         }));
     }
 
-    ctx.config.verbose_println("   ✓ Bundler ready");
+    ctx.config.verbose_println("   ✓ Bundler ready").expect("Failed to write to stdout");
 
     // Return command name - cargo install puts it in PATH
     Ok(std::path::PathBuf::from("kodegen_bundler_bundle"))
@@ -191,7 +191,7 @@ pub async fn bundle_platform(
         "   Target architecture: {}\n   Output path: {}",
         arch,
         output_path.display()
-    ));
+    )).expect("Failed to write to stdout");
 
     // Determine source argument
     // Bundler needs GitHub URL to clone - construct from metadata
@@ -229,7 +229,7 @@ pub async fn bundle_platform(
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    runtime_config.indent(&line);
+                    runtime_config.indent(&line).expect("Failed to write to stdout");
                 }
             }
         },
@@ -238,7 +238,7 @@ pub async fn bundle_platform(
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    runtime_config2.indent(&line);
+                    runtime_config2.indent(&line).expect("Failed to write to stdout");
                 }
             }
         }
@@ -264,8 +264,8 @@ pub async fn bundle_platform(
                 ),
             }));
         }
-        
-        ctx.config.indent(&format!("✓ {}", filename));
+
+        ctx.config.indent(&format!("✓ {}", filename)).expect("Failed to write to stdout");
         Ok(vec![output_path])
     } else {
         Err(ReleaseError::Cli(CliError::ExecutionFailed {

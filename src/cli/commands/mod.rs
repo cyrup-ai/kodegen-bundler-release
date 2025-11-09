@@ -41,9 +41,9 @@ pub async fn execute_command(args: Args, env_config: EnvConfig) -> Result<i32> {
             if config.is_verbose() {
                 let suggestions = e.recovery_suggestions();
                 if !suggestions.is_empty() {
-                    config.println("\n💡 Recovery suggestions:");
+                    let _ = config.println("\n💡 Recovery suggestions:");
                     for suggestion in suggestions {
-                        config.println(&format!("  • {}", suggestion));
+                        let _ = config.println(&format!("  • {}", suggestion));
                     }
                 }
             }

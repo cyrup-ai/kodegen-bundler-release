@@ -25,7 +25,7 @@ pub async fn perform_release_single_repo(
     config: &RuntimeConfig,
     env_config: &EnvConfig,
 ) -> Result<i32> {
-    config.println("🚀 Starting release in isolated environment");
+    config.println("🚀 Starting release in isolated environment").expect("Failed to write to stdout");
     
     // ===== LOAD OR CREATE RELEASE STATE =====
     let mut release_state = load_or_create_release_state(&metadata, config).await?;
@@ -57,11 +57,11 @@ pub async fn perform_release_single_repo(
     }
     
     // ===== PHASE 1: VERSION BUMP =====
-    config.println("🔢 Bumping version...");
-    
+    config.println("🔢 Bumping version...").expect("Failed to write to stdout");
+
     let cargo_toml_path = temp_dir.join("Cargo.toml");
-    
-    config.success_println(&format!("✓ v{} → v{} ({})", current_version, new_version, version_bump));
+
+    config.success_println(&format!("✓ v{} → v{} ({})", current_version, new_version, version_bump)).expect("Failed to write to stdout");
     
     // Use default retry and timeout configs
     use crate::cli::retry_config::{RetryConfig, CargoTimeoutConfig};
@@ -75,7 +75,7 @@ pub async fn perform_release_single_repo(
     verify_version_in_parsed_toml(&updated_toml_value, &new_version)?;
     
     // Update Cargo.lock with new version
-    config.verbose_println("   Updating Cargo.lock...");
+    config.verbose_println("   Updating Cargo.lock...").expect("Failed to write to stdout");
     
     let update_lock_result = retry_with_backoff(
         || async {
@@ -103,47 +103,47 @@ pub async fn perform_release_single_repo(
             reason: String::from_utf8_lossy(&update_lock_result.stderr).to_string(),
         }));
     }
-    
-    config.success_println("✓ Updated and verified Cargo.toml and Cargo.lock");
-    
+
+    config.success_println("✓ Updated and verified Cargo.toml and Cargo.lock").expect("Failed to write to stdout");
+
     // Save state after version bump
     release_state.set_phase(crate::state::ReleasePhase::VersionUpdate);
     crate::state::save_release_state(&mut release_state).await?;
-    config.verbose_println("ℹ️  Saved progress checkpoint (Version bumped)");
-    
+    config.verbose_println("ℹ️  Saved progress checkpoint (Version bumped)").expect("Failed to write to stdout");
+
     // ===== PHASE 2: DETECT AND RESOLVE CONFLICTS =====
-    config.println("🔍 Checking for conflicting artifacts...");
+    config.println("🔍 Checking for conflicting artifacts...").expect("Failed to write to stdout");
     
     // Check if tag exists
     let tag_exists = git_manager.version_tag_exists(&new_version).await?;
     
     if tag_exists {
-        config.warning_println(&format!("⚠️  Tag v{} already exists - cleaning up...", new_version));
+        config.warning_println(&format!("⚠️  Tag v{} already exists - cleaning up...", new_version)).expect("Failed to write to stdout");
         git_manager.cleanup_existing_tag(&new_version).await?;
-        config.success_println("✓ Cleaned up existing tag");
+        config.success_println("✓ Cleaned up existing tag").expect("Failed to write to stdout");
     }
-    
+
     // Check if release branch exists
     let branch_exists = git_manager.remote_release_branch_exists(&new_version).await?;
-    
+
     if branch_exists {
-        config.warning_println(&format!("⚠️  Branch release-v{} already exists - cleaning up...", new_version));
+        config.warning_println(&format!("⚠️  Branch release-v{} already exists - cleaning up...", new_version)).expect("Failed to write to stdout");
         git_manager.cleanup_existing_branch(&new_version).await?;
-        config.success_println("✓ Cleaned up existing branch");
+        config.success_println("✓ Cleaned up existing branch").expect("Failed to write to stdout");
     }
-    
-    config.success_println("✓ All conflicts resolved - ready to release");
-    
+
+    config.success_println("✓ All conflicts resolved - ready to release").expect("Failed to write to stdout");
+
     // ===== PHASE 3+: GITHUB SETUP AND REMAINING PHASES =====
-    config.println("🔍 Verifying GitHub API access...");
+    config.println("🔍 Verifying GitHub API access...").expect("Failed to write to stdout");
     
     // Auto-detect GitHub repository
     let (github_owner, github_repo_name) = detect_github_repo(&git_manager).await?;
-    
+
     config.verbose_println(&format!(
         "   Repository: {}/{}",
         &github_owner, &github_repo_name
-    ));
+    )).expect("Failed to write to stdout");
     
     // Initialize GitHub manager
     let github_config = crate::github::GitHubReleaseConfig {
@@ -156,7 +156,7 @@ pub async fn perform_release_single_repo(
     };
     
     let github_manager = crate::github::GitHubReleaseManager::new(github_config, env_config)?;
-    config.success_println("✓ GitHub API authenticated");
+    config.success_println("✓ GitHub API authenticated").expect("Failed to write to stdout");
     
     // ===== BUILD CONTEXT FOR PHASE EXECUTION =====
     let ctx = ReleasePhaseContext {
@@ -174,18 +174,18 @@ pub async fn perform_release_single_repo(
     execute_phases_with_retry(&ctx, &mut release_state, env_config).await?;
     
     // ===== CLEANUP RELEASE STATE ON SUCCESS =====
-    config.success_println("🎉 Release complete!");
-    config.success_println(&format!("   Package: {}", metadata.name));
-    config.success_println(&format!("   Version: v{}", new_version));
-    
+    config.success_println("🎉 Release complete!").expect("Failed to write to stdout");
+    config.success_println(&format!("   Package: {}", metadata.name)).expect("Failed to write to stdout");
+    config.success_println(&format!("   Version: v{}", new_version)).expect("Failed to write to stdout");
+
     // Cleanup release state file after successful release
     match crate::state::cleanup_release_state() {
         Ok(()) => {
-            config.verbose_println("✓ Release state cleaned up");
+            config.verbose_println("✓ Release state cleaned up").expect("Failed to write to stdout");
         }
         Err(e) => {
-            config.verbose_println(&format!("Warning: Failed to cleanup release state: {}", e));
-            config.verbose_println("This is non-fatal - the release completed successfully");
+            config.verbose_println(&format!("Warning: Failed to cleanup release state: {}", e)).expect("Failed to write to stdout");
+            config.verbose_println("This is non-fatal - the release completed successfully").expect("Failed to write to stdout");
         }
     }
     
@@ -198,15 +198,15 @@ async fn load_or_create_release_state(
     config: &RuntimeConfig,
 ) -> Result<ReleaseState> {
     if has_active_release() {
-        config.println("📂 Found existing release state - resuming...");
-        
+        config.println("📂 Found existing release state - resuming...").expect("Failed to write to stdout");
+
         match load_release_state().await {
             Ok(LoadStateResult { state, recovered_from_backup, warnings }) => {
                 if recovered_from_backup {
-                    config.warning_println("⚠️  State recovered from backup");
+                    config.warning_println("⚠️  State recovered from backup").expect("Failed to write to stdout");
                 }
                 for warning in &warnings {
-                    config.warning_println(&format!("⚠️  {}", warning));
+                    config.warning_println(&format!("⚠️  {}", warning)).expect("Failed to write to stdout");
                 }
                 
                 // Validate state version matches what we're trying to release
@@ -227,30 +227,30 @@ async fn load_or_create_release_state(
                         "⚠️  State version mismatch: expected v{}, found v{}",
                         expected_version,
                         state.target_version
-                    ));
-                    config.warning_println("   Starting fresh release...");
-                    
+                    )).expect("Failed to write to stdout");
+                    config.warning_println("   Starting fresh release...").expect("Failed to write to stdout");
+
                     // Clean up stale state file before creating new state
                     if let Err(e) = crate::state::cleanup_release_state() {
-                        config.warning_println(&format!("⚠️  Failed to cleanup stale state: {}", e));
+                        config.warning_println(&format!("⚠️  Failed to cleanup stale state: {}", e)).expect("Failed to write to stdout");
                     }
-                    
+
                     // Create new state
                     create_new_release_state(metadata)
                 } else {
-                    config.success_println(&format!("✓ Resuming release v{}", state.target_version));
-                    config.indent(&format!("   Current phase: {:?}", state.current_phase));
-                    config.indent(&format!("   Checkpoints: {}", state.checkpoints.len()));
+                    config.success_println(&format!("✓ Resuming release v{}", state.target_version)).expect("Failed to write to stdout");
+                    config.indent(&format!("   Current phase: {:?}", state.current_phase)).expect("Failed to write to stdout");
+                    config.indent(&format!("   Checkpoints: {}", state.checkpoints.len())).expect("Failed to write to stdout");
                     Ok(state)
                 }
             }
             Err(e) => {
-                config.warning_println(&format!("⚠️  Failed to load state: {}", e));
-                config.warning_println("   Starting fresh release...");
-                
+                config.warning_println(&format!("⚠️  Failed to load state: {}", e)).expect("Failed to write to stdout");
+                config.warning_println("   Starting fresh release...").expect("Failed to write to stdout");
+
                 // Clean up corrupted state file before creating new state
                 if let Err(e) = crate::state::cleanup_release_state() {
-                    config.warning_println(&format!("⚠️  Failed to cleanup corrupted state: {}", e));
+                    config.warning_println(&format!("⚠️  Failed to cleanup corrupted state: {}", e)).expect("Failed to write to stdout");
                 }
                 
                 create_new_release_state(metadata)

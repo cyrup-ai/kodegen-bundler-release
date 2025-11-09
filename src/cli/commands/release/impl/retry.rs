@@ -63,7 +63,7 @@ where
                         "✓ {} succeeded after {} retry(ies)",
                         operation_name,
                         attempts
-                    ));
+                    )).expect("Failed to write to stdout");
                 }
                 return Ok(result);
             }
@@ -123,8 +123,8 @@ where
                     attempts,
                     max_retries + 1,
                     e
-                ));
-                config.indent(&format!("   Retrying in {:.1}s...", actual_wait.as_secs_f64()));
+                )).expect("Failed to write to stdout");
+                config.indent(&format!("   Retrying in {:.1}s...", actual_wait.as_secs_f64())).expect("Failed to write to stdout");
                 
                 // Wait before retry (respecting deadline)
                 tokio::time::sleep(actual_wait).await;

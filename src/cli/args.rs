@@ -58,6 +58,7 @@ impl RuntimeConfig {
     }
 
     /// Get a reference to the output manager
+    #[allow(dead_code)]
     pub fn output(&self) -> &super::OutputManager {
         &self.output
     }
@@ -71,13 +72,13 @@ impl Default for RuntimeConfig {
 
 impl RuntimeConfig {
     /// Print message
-    pub fn println(&self, message: &str) {
-        self.output.println(message);
+    pub fn println(&self, message: &str) -> std::io::Result<()> {
+        self.output.println(message)
     }
 
     /// Print verbose message (same as println - we always show everything)
-    pub fn verbose_println(&self, message: &str) {
-        self.output.println(message);
+    pub fn verbose_println(&self, message: &str) -> std::io::Result<()> {
+        self.output.println(message)
     }
 
     /// Print error message (always shown)
@@ -86,20 +87,20 @@ impl RuntimeConfig {
     }
 
     /// Print warning message
-    pub fn warning_println(&self, message: &str) {
-        self.output.warn(message);
+    pub fn warning_println(&self, message: &str) -> std::io::Result<()> {
+        self.output.warn(message)
     }
 
     /// Print success message
-    pub fn success_println(&self, message: &str) {
-        self.output.success(message);
+    pub fn success_println(&self, message: &str) -> std::io::Result<()> {
+        self.output.success(message)
     }
 
 
 
     /// Print indented text
-    pub fn indent(&self, message: &str) {
-        self.output.indent(message);
+    pub fn indent(&self, message: &str) -> std::io::Result<()> {
+        self.output.indent(message)
     }
 
     /// Check if verbose output is enabled (always true now)

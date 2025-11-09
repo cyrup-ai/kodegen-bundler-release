@@ -16,22 +16,22 @@ pub(super) async fn execute_release(
     env_config: &EnvConfig,
 ) -> Result<i32> {
     // 1. Parse and resolve repository source
-    config.println("📦 Resolving repository source...");
+    config.println("📦 Resolving repository source...").expect("Failed to write to stdout");
     let source_parsed = crate::source::RepositorySource::parse(&args.source)?;
     let resolved = source_parsed.resolve().await?;
-    config.verbose_println(&format!("✓ Repository: {}", resolved.path.display()));
+    config.verbose_println(&format!("✓ Repository: {}", resolved.path.display())).expect("Failed to write to stdout");
 
     // 2. Extract metadata from single Cargo.toml
     let cargo_toml = resolved.path.join("Cargo.toml");
     let manifest = crate::metadata::load_manifest(&cargo_toml)?;
     let metadata = manifest.metadata;
     let binary_name = manifest.binary_name;
-    
-    config.verbose_println(&format!("✓ Package: {}", metadata.name));
-    config.verbose_println(&format!("✓ Binary: {}", binary_name));
+
+    config.verbose_println(&format!("✓ Package: {}", metadata.name)).expect("Failed to write to stdout");
+    config.verbose_println(&format!("✓ Binary: {}", binary_name)).expect("Failed to write to stdout");
 
     // 3. Validation - git status check
-    config.println("🔍 Validating repository...");
+    config.println("🔍 Validating repository...").expect("Failed to write to stdout");
     let git_status = std::process::Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(&resolved.path)
@@ -44,12 +44,12 @@ pub(super) async fn execute_release(
         })?;
     
     if !git_status.stdout.is_empty() {
-        config.warning_println("⚠️  Working directory has uncommitted changes");
-        config.warning_println("   This may cause issues with the release process");
+        config.warning_println("⚠️  Working directory has uncommitted changes").expect("Failed to write to stdout");
+        config.warning_println("   This may cause issues with the release process").expect("Failed to write to stdout");
     }
 
     // 4. Create temp clone for isolated execution
-    config.println("📁 Creating temporary clone...");
+    config.println("📁 Creating temporary clone...").expect("Failed to write to stdout");
     let temp_dir = if resolved.is_temp {
         resolved.path.clone()
     } else {
@@ -60,11 +60,11 @@ pub(super) async fn execute_release(
     // Clean up any stale tracking from crashed previous releases
     match super::temp_clone::cleanup_stale_tracking() {
         Ok(count) if count > 0 => {
-            config.verbose_println(&format!("✓ Cleaned up {} stale release(s)", count));
+            config.verbose_println(&format!("✓ Cleaned up {} stale release(s)", count)).expect("Failed to write to stdout");
         }
         Ok(_) => {}, // No stale releases
         Err(e) => {
-            config.verbose_println(&format!("⚠ Warning: Failed to clean stale tracking: {}", e));
+            config.verbose_println(&format!("⚠ Warning: Failed to clean stale tracking: {}", e)).expect("Failed to write to stdout");
             // Non-fatal - continue with release
         }
     }
@@ -82,19 +82,19 @@ pub(super) async fn execute_release(
     if !resolved.is_temp {
         match std::fs::remove_dir_all(&temp_dir_pathbuf) {
             Ok(()) => {
-                config.verbose_println("✅ Temp clone cleaned up");
-                
+                config.verbose_println("✅ Temp clone cleaned up").expect("Failed to write to stdout");
+
                 // Clear temp path tracking after successful cleanup
                 if let Err(e) = super::temp_clone::clear_active_temp_path() {
-                    config.verbose_println(&format!("Warning: Failed to clear temp path tracking: {}", e));
+                    config.verbose_println(&format!("Warning: Failed to clear temp path tracking: {}", e)).expect("Failed to write to stdout");
                 }
             }
             Err(e) => {
-                config.warning_println(&format!("Failed to cleanup temp directory: {}", e));
+                config.warning_println(&format!("Failed to cleanup temp directory: {}", e)).expect("Failed to write to stdout");
                 config.warning_println(&format!(
                     "You may need to manually remove: {}",
                     temp_dir_pathbuf.display()
-                ));
+                )).expect("Failed to write to stdout");
                 
                 // Still clear tracking - user will manually clean up temp dir
                 let _ = super::temp_clone::clear_active_temp_path();
