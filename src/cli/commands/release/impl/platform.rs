@@ -268,6 +268,7 @@ pub async fn bundle_docker_platform(
     let arch = match platform {
         "deb" | "rpm" => "amd64",  // Default Docker Linux target
         "appimage" => "x86_64",
+        "nsis" => "x64",  // Windows 64-bit
         _ => {
             return Err(ReleaseError::Cli(CliError::InvalidArguments {
                 reason: format!("Docker bundling not supported for platform: {}", platform),
