@@ -10,7 +10,7 @@ use super::context::ReleasePhaseContext;
 pub fn get_platforms_to_build() -> Vec<&'static str> {
     // Return all supported platforms
     // The bundler will automatically use Docker for cross-platform builds
-    vec!["deb", "rpm", "appimage", "dmg", "nsis"]
+    vec!["deb", "rpm", "appimage", "dmg", "exe"]
 }
 
 /// Get platforms that can be built natively on current OS
@@ -44,7 +44,7 @@ pub fn is_native_platform(platform: &str) -> bool {
         ("linux", "deb" | "rpm" | "appimage") => true,
 
         // Windows native packages
-        ("windows", "nsis") => true,
+        ("windows", "exe") => true,
 
         // Everything else requires Docker
         _ => false,
@@ -107,9 +107,8 @@ pub fn construct_output_filename(
         "deb" => format!("{}_{}_{}.deb", binary_name, version, arch),
         "rpm" => format!("{}-{}-1.{}.rpm", binary_name, version, arch),
         "dmg" => format!("{}-{}-{}.dmg", binary_name, version, arch),
-        "nsis" => format!("{}_{}_{}_setup.exe", binary_name, version, arch),
+        "exe" => format!("{}_{}_{}_setup.exe", binary_name, version, arch),
         "appimage" => format!("{}-{}-{}.AppImage", binary_name, version, arch),
-        "app" => format!("{}-{}-{}.app", binary_name, version, arch),
         _ => {
             return Err(ReleaseError::Cli(CliError::InvalidArguments {
                 reason: format!("Unknown platform: {}", platform),
@@ -165,11 +164,11 @@ pub async fn bundle_platform(
     let arch = match platform {
         // Docker platforms have fixed architectures
         "deb" | "rpm" => "amd64",
-        "appimage" => "x86_64", 
-        "nsis" => "x64",
-        
+        "appimage" => "x86_64",
+        "exe" => "x64",
+
         // Native platforms use detected architecture
-        "dmg" | "app" => detect_target_architecture()?,
+        "dmg" => detect_target_architecture()?,
         
         _ => {
             return Err(ReleaseError::Cli(CliError::InvalidArguments {

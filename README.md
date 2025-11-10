@@ -250,7 +250,7 @@ For creating Linux/Windows bundles from macOS (or vice versa), use Docker:
 kodegen_bundler_release bundle --rebuild-image
 
 # Create Windows NSIS installer from Linux/macOS
-kodegen_bundler_release bundle --platform nsis
+kodegen_bundler_release bundle --platform exe
 
 # Create Linux packages from macOS
 kodegen_bundler_release bundle --platform deb
@@ -440,7 +440,7 @@ echo $APPLE_CERTIFICATE | base64 -d | openssl pkcs12 -info -nodes -passin pass:$
 **Solution**: Increase Docker memory limit:
 
 ```bash
-kodegen_bundler_release bundle --platform nsis --docker-memory 4096
+kodegen_bundler_release bundle --platform exe --docker-memory 4096
 ```
 
 ## Development
