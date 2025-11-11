@@ -62,7 +62,7 @@ pub async fn execute_phases_with_retry(
             None,
             true,  // rollback_capable
         );
-        crate::state::save_release_state(release_state).await?;
+        crate::state::save_release_state(ctx.release_clone_path, release_state).await?;
         ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Git operations)").expect("Failed to write to stdout");
         
         Some(result)
@@ -142,7 +142,7 @@ pub async fn execute_phases_with_retry(
             })),
             true,  // rollback_capable
         );
-        crate::state::save_release_state(release_state).await?;
+        crate::state::save_release_state(ctx.release_clone_path, release_state).await?;
         ctx.config.verbose_println("ℹ️  Saved progress checkpoint (GitHub release)").expect("Failed to write to stdout");
         
         release_id
@@ -308,17 +308,29 @@ pub async fn execute_phases_with_retry(
     } else {
         ctx.config.println("🔍 Verifying release is ready to publish...").expect("Failed to write to stdout");
 
-        if !ctx.github_manager.verify_release_is_draft(release_id).await? {
-            return Err(ReleaseError::Cli(CliError::ExecutionFailed {
-                command: "publish_release".to_string(),
-                reason: format!(
-                    "Release {} is not a draft or was deleted. Cannot publish.",
-                    release_id
-                ),
-            }));
+        match ctx.github_manager.verify_release_is_draft(release_id).await {
+            Ok(true) => {
+                ctx.config.success_println("✓ Release verified as draft").expect("Failed to write to stdout");
+            }
+            Ok(false) => {
+                return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "publish_release".to_string(),
+                    reason: format!(
+                        "Release {} is not a draft (already published). Cannot publish again.",
+                        release_id
+                    ),
+                }));
+            }
+            Err(e) => {
+                return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                    command: "verify_release_draft_status".to_string(),
+                    reason: format!(
+                        "Failed to verify release {} draft status: {}",
+                        release_id, e
+                    ),
+                }));
+            }
         }
-
-        ctx.config.success_println("✓ Release verified as draft").expect("Failed to write to stdout");
         ctx.config.println("").expect("Failed to write to stdout");
 
         ctx.config.println("✅ Publishing GitHub release...").expect("Failed to write to stdout");
@@ -341,7 +353,7 @@ pub async fn execute_phases_with_retry(
             None,
             false,  // Can't unpublish
         );
-        crate::state::save_release_state(release_state).await?;
+        crate::state::save_release_state(ctx.release_clone_path, release_state).await?;
         ctx.config.verbose_println("ℹ️  Saved progress checkpoint (Release published)").expect("Failed to write to stdout");
     }
 
@@ -451,7 +463,7 @@ async fn upload_artifacts_incrementally(
             }
             
             // Save state after each successful upload
-            crate::state::save_release_state(release_state).await?;
+            crate::state::save_release_state(ctx.release_clone_path, release_state).await?;
 
             ctx.config.indent(&format!("✓ Uploaded {}", filename)).expect("Failed to write to stdout");
             uploaded_count += 1;

@@ -286,7 +286,8 @@ impl GitHubReleaseManager {
     ///
     /// # Returns
     /// - `Ok(true)` - Release exists and is still a draft
-    /// - `Ok(false)` - Release doesn't exist, is already published, or network error
+    /// - `Ok(false)` - Release exists but is already published
+    /// - `Err` - Network error, authentication failure, or release not found
     pub async fn verify_release_is_draft(&self, release_id: u64) -> Result<bool> {
         match self.client
             .inner()
@@ -296,7 +297,7 @@ impl GitHubReleaseManager {
             .await
         {
             Ok(release) => Ok(release.draft),
-            Err(_) => Ok(false),
+            Err(e) => Err(ReleaseError::GitHub(e.to_string())),
         }
     }
 

@@ -3,9 +3,9 @@
 //! coordinates all release phases with state management and error recovery.
 
 use crate::cli::RuntimeConfig;
-use crate::error::{GitError, ReleaseError, Result};
+use crate::error::{ReleaseError, Result};
 use crate::git::{GitConfig, GitManager};
-use crate::state::{has_active_release, load_release_state, LoadStateResult, ReleaseState};
+use crate::state::{LoadStateResult, ReleaseState};
 use crate::version::VersionBump;
 use crate::EnvConfig;
 
@@ -28,7 +28,7 @@ pub async fn perform_release_single_repo(
     config.println("🚀 Starting release in isolated environment").expect("Failed to write to stdout");
     
     // ===== LOAD OR CREATE RELEASE STATE =====
-    let mut release_state = load_or_create_release_state(&metadata, config).await?;
+    let mut release_state = load_or_create_release_state(temp_dir, &metadata, config).await?;
     
     // Extract version information for use in subsequent code
     let new_version = release_state.target_version.clone();
@@ -50,12 +50,7 @@ pub async fn perform_release_single_repo(
         ..Default::default()
     };
     let git_manager = GitManager::with_config(temp_dir, git_config).await?;
-    
-    // Validate working directory is clean before making any modifications
-    if !git_manager.is_clean().await? {
-        return Err(ReleaseError::Git(GitError::DirtyWorkingDirectory));
-    }
-    
+
     // ===== PHASE 1: VERSION BUMP =====
     config.println("🔢 Bumping version...").expect("Failed to write to stdout");
 
@@ -108,7 +103,7 @@ pub async fn perform_release_single_repo(
 
     // Save state after version bump
     release_state.set_phase(crate::state::ReleasePhase::VersionUpdate);
-    crate::state::save_release_state(&mut release_state).await?;
+    crate::state::save_release_state(temp_dir, &mut release_state).await?;
     config.verbose_println("ℹ️  Saved progress checkpoint (Version bumped)").expect("Failed to write to stdout");
 
     // ===== PHASE 2: DETECT AND RESOLVE CONFLICTS =====
@@ -179,7 +174,7 @@ pub async fn perform_release_single_repo(
     config.success_println(&format!("   Version: v{}", new_version)).expect("Failed to write to stdout");
 
     // Cleanup release state file after successful release
-    match crate::state::cleanup_release_state() {
+    match crate::state::cleanup_release_state(temp_dir) {
         Ok(()) => {
             config.verbose_println("✓ Release state cleaned up").expect("Failed to write to stdout");
         }
@@ -194,13 +189,14 @@ pub async fn perform_release_single_repo(
 
 /// Load existing release state or create a new one
 async fn load_or_create_release_state(
+    temp_dir: &std::path::Path,
     metadata: &crate::metadata::PackageMetadata,
     config: &RuntimeConfig,
 ) -> Result<ReleaseState> {
-    if has_active_release() {
+    if crate::state::has_active_release(temp_dir) {
         config.println("📂 Found existing release state - resuming...").expect("Failed to write to stdout");
 
-        match load_release_state().await {
+        match crate::state::load_release_state(temp_dir).await {
             Ok(LoadStateResult { state, recovered_from_backup, warnings }) => {
                 if recovered_from_backup {
                     config.warning_println("⚠️  State recovered from backup").expect("Failed to write to stdout");
@@ -231,7 +227,7 @@ async fn load_or_create_release_state(
                     config.warning_println("   Starting fresh release...").expect("Failed to write to stdout");
 
                     // Clean up stale state file before creating new state
-                    if let Err(e) = crate::state::cleanup_release_state() {
+                    if let Err(e) = crate::state::cleanup_release_state(temp_dir) {
                         config.warning_println(&format!("⚠️  Failed to cleanup stale state: {}", e)).expect("Failed to write to stdout");
                     }
 
@@ -249,7 +245,7 @@ async fn load_or_create_release_state(
                 config.warning_println("   Starting fresh release...").expect("Failed to write to stdout");
 
                 // Clean up corrupted state file before creating new state
-                if let Err(e) = crate::state::cleanup_release_state() {
+                if let Err(e) = crate::state::cleanup_release_state(temp_dir) {
                     config.warning_println(&format!("⚠️  Failed to cleanup corrupted state: {}", e)).expect("Failed to write to stdout");
                 }
                 

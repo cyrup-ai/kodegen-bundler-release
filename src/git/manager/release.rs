@@ -23,11 +23,12 @@ impl<'a> ReleaseOperations<'a> {
     /// 1. Commits any uncommitted work on the current branch (never leaves work dirty)
     /// 2. Switches to main branch
     /// 3. Merges work from the original branch (ONLY if not a release branch)
-    /// 4. Creates a new release branch matching the bumped version
-    /// 5. Commits version changes on the release branch
-    /// 6. Creates version tag
-    /// 7. Pushes release branch with tags to remote (if requested)
-    /// 8. ALWAYS returns to main branch (using checkout, never reset)
+    /// 4. Commits version changes TO MAIN BRANCH
+    /// 5. Pushes main branch to remote (if requested)
+    /// 6. Creates release branch FROM UPDATED MAIN
+    /// 7. Creates version tag on release branch
+    /// 8. Pushes release branch with tags to remote (if requested)
+    /// 9. ALWAYS returns to main branch (using checkout, never reset)
     pub async fn perform_release(
         &self,
         version: &Version,
@@ -109,7 +110,56 @@ impl<'a> ReleaseOperations<'a> {
             }
         }
 
-        // Step 5: Create release branch matching the bumped version
+        // Step 5: Commit version changes TO MAIN BRANCH
+        let commit_message = self.config.generate_commit_message(version);
+        let commit = match self
+            .repository
+            .create_release_commit(version, Some(commit_message))
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let recovery_instructions = self.get_recovery_instructions().await;
+                return Err(GitError::CommitFailed {
+                    reason: format!(
+                        "Failed to create version commit on main: {}. Recovery: {}",
+                        e, recovery_instructions
+                    ),
+                }
+                .into());
+            }
+        };
+        self.release_state
+            .lock()
+            .map_err(|_| GitError::CommitFailed {
+                reason: "Failed to acquire lock on release state".to_string(),
+            })?
+            .release_commit = Some(commit.clone());
+
+        // Step 6: Push main branch to remote (if requested)
+        if push_to_remote {
+            match self
+                .repository
+                .push_to_remote(Some(&self.config.default_remote), false)
+                .await
+            {
+                Ok(_push_info) => {
+                    // Main branch successfully pushed with version bump
+                }
+                Err(e) => {
+                    let recovery_instructions = self.get_recovery_instructions().await;
+                    return Err(GitError::PushFailed {
+                        reason: format!(
+                            "Failed to push main branch: {}. Local changes preserved. Recovery: {}",
+                            e, recovery_instructions
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+
+        // Step 7: Create release branch matching the bumped version FROM UPDATED MAIN
         let release_branch = match self.repository.create_release_branch(version).await {
             Ok(branch) => branch,
             Err(e) => {
@@ -132,33 +182,7 @@ impl<'a> ReleaseOperations<'a> {
             })?
             .release_branch = Some(release_branch.clone());
 
-        // Step 6: Commit version changes on release branch
-        let commit_message = self.config.generate_commit_message(version);
-        let commit = match self
-            .repository
-            .create_release_commit(version, Some(commit_message))
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let recovery_instructions = self.get_recovery_instructions().await;
-                return Err(GitError::CommitFailed {
-                    reason: format!(
-                        "Failed to create release commit: {}. Recovery: {}",
-                        e, recovery_instructions
-                    ),
-                }
-                .into());
-            }
-        };
-        self.release_state
-            .lock()
-            .map_err(|_| GitError::CommitFailed {
-                reason: "Failed to acquire lock on release state".to_string(),
-            })?
-            .release_commit = Some(commit.clone());
-
-        // Step 7: Create version tag on release branch
+        // Step 8: Create version tag on release branch
         let tag_message = self.config.generate_tag_message(version);
         let tag = match self
             .repository
@@ -184,7 +208,7 @@ impl<'a> ReleaseOperations<'a> {
             })?
             .release_tag = Some(tag.clone());
 
-        // Step 8: Push release branch with tags to remote (if requested)
+        // Step 9: Push release branch with tags to remote (if requested)
         let release_branch_push_info = if push_to_remote {
             let branch_name = format!("v{}", version);
             match self
@@ -217,7 +241,7 @@ impl<'a> ReleaseOperations<'a> {
             None
         };
 
-        // Step 9: ALWAYS return to main branch
+        // Step 10: ALWAYS return to main branch
         self.repository.checkout_branch("main").await?;
 
         let duration = start_time.elapsed();
@@ -226,7 +250,7 @@ impl<'a> ReleaseOperations<'a> {
             version: version.clone(),
             commit,
             tag,
-            push_info: None, // No longer pushing main branch separately
+            push_info: None, // Main branch already pushed in step 6
             release_branch,
             release_branch_push_info,
             duration,
