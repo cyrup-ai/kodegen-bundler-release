@@ -7,7 +7,7 @@
 
 use crate::error::{GitError, PublishError, Result};
 use crate::workspace::SharedWorkspaceInfo;
-use gix::bstr::ByteSlice;
+use kodegen_tools_git::RepoHandle;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::process::Command as AsyncCommand;
@@ -16,7 +16,7 @@ use tokio::process::Command as AsyncCommand;
 #[derive(Debug)]
 pub struct WorkspaceValidator {
     workspace: SharedWorkspaceInfo,
-    repository: gix::Repository,
+    repository: RepoHandle,
 }
 
 /// Validation result with detailed pass/fail information
@@ -49,8 +49,11 @@ pub struct ValidationCheck {
 
 impl WorkspaceValidator {
     /// Create a new workspace validator
-    pub fn new(workspace: SharedWorkspaceInfo) -> Result<Self> {
-        let repository = gix::discover(&workspace.root).map_err(|_| GitError::NotRepository)?;
+    pub async fn new(workspace: SharedWorkspaceInfo) -> Result<Self> {
+        let repository = kodegen_tools_git::discover_repo(&workspace.root)
+            .await
+            .map_err(|_| GitError::NotRepository)?
+            .map_err(|_| GitError::NotRepository)?;
 
         Ok(Self {
             workspace,
@@ -177,8 +180,7 @@ impl WorkspaceValidator {
     /// Check if working directory is clean
     async fn check_working_directory_clean(&self) -> Result<bool> {
         // Use kodegen_tools_git::is_clean which properly handles the gix status API
-        let repo_handle = kodegen_tools_git::RepoHandle::new(self.repository.clone());
-        kodegen_tools_git::is_clean(&repo_handle)
+        kodegen_tools_git::is_clean(&self.repository)
             .await
             .map_err(|_| {
                 GitError::RemoteOperationFailed {
@@ -193,6 +195,7 @@ impl WorkspaceValidator {
     async fn check_valid_branch(&self) -> Result<String> {
         let head = self
             .repository
+            .raw()
             .head()
             .map_err(|e| GitError::BranchOperationFailed {
                 reason: e.to_string(),
@@ -200,8 +203,7 @@ impl WorkspaceValidator {
 
         let branch_name = head
             .referent_name()
-            .and_then(|name| name.shorten().to_str().ok())
-            .map(|s| s.to_string())
+            .map(|name| name.shorten().to_string())
             .unwrap_or_else(|| "detached HEAD".to_string());
 
         Ok(branch_name)

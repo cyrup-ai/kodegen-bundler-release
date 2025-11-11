@@ -100,7 +100,7 @@ impl RepositorySource {
 
                 let temp_dir = std::env::temp_dir().join(format!("kodegen-release-{}", timestamp));
 
-                let remote_url = format!("https://github.com/{}/{}.git", owner, repo);
+                let remote_url = format!("git@github.com:{}/{}.git", owner, repo);
                 let clone_opts =
                     kodegen_tools_git::CloneOpts::new(remote_url, temp_dir.clone());
 

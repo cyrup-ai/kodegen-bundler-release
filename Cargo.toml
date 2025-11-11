@@ -22,16 +22,9 @@ name = "kodegen_bundler_release"
 path = "src/main.rs"
 
 [dependencies]
-# Git operations using pure Rust (no CLI)
-gix = "0.74"
-# Explicit dependencies to fix Docker build transitive dependency resolution
-gix-lock = "19"
-gix-tempfile = "19"
-gix-utils = "0.3"
-gix-url = "0.28"  # Version compatible with gix 0.74
-
-# Shared Git operations package
-kodegen_tools_git = { version = "0.1" }
+# Shared Git operations package (provides all Git functionality)
+# Using local development version with HTTPS support and introspection APIs
+kodegen_tools_git = { path = "../kodegen-tools-git" }
 
 # GitHub API integration for releases
 kodegen_tools_github = { version = "0.1" }
