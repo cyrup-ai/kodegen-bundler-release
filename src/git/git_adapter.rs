@@ -46,11 +46,14 @@ impl GitOperations for KodegenGitOperations {
         version: &Version,
         message: Option<String>,
     ) -> Result<CommitInfo> {
-        // Stage all changes
+        // Stage only version-related files (exclude state files and other temporary artifacts)
         git::add(
             self.repo.clone(),
             AddOpts {
-                paths: vec![std::path::PathBuf::from(".")],
+                paths: vec![
+                    std::path::PathBuf::from("Cargo.toml"),
+                    std::path::PathBuf::from("Cargo.lock"),
+                ],
                 update_only: false,
                 force: false,
             },
