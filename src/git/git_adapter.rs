@@ -87,7 +87,7 @@ impl GitOperations for KodegenGitOperations {
             let commit =
                 repo_clone
                     .raw()
-                    .find_commit(commit_id)
+                    .find_commit(commit_id.id)
                     .map_err(|e| GitError::CommitFailed {
                         reason: format!("Failed to find commit: {}", e),
                     })?;
@@ -601,7 +601,7 @@ impl GitOperations for KodegenGitOperations {
                 })?;
 
         // Return minimal commit info with the commit ID
-        let commit_hash = commit_id.to_string();
+        let commit_hash = commit_id.id.to_string();
         let short_hash = commit_hash.chars().take(7).collect();
 
         Ok(CommitInfo {
