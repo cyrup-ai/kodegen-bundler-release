@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_bundler_release"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -24,13 +24,13 @@ path = "src/main.rs"
 [dependencies]
 # Shared Git operations package (provides all Git functionality)
 # Using local development version with HTTPS support and introspection APIs
-kodegen_tools_git = { version = "0.2" }
+kodegen_tools_git = { version = "0.3" }
 
 # GitHub API integration for releases
-kodegen_tools_github = { version = "0.2" }
+kodegen_tools_github = { version = "0.3" }
 
 # Code signing for macOS artifacts
-kodegen_bundler_sign = { version = "0.2" }
+kodegen_bundler_sign = { version = "0.3" }
 
 # Binary content for asset upload
 bytes = "1"
@@ -89,7 +89,7 @@ rustls = { version = "0.23", features = ["ring"] }
 # Path utilities
 path-absolutize = "3"
 
-# Workspace integration 
+# Workspace integration
 sugars_collections = { version = "0.5" }
 
 # SHA-256 hashing for artifact checksums
