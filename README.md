@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/img/banner.png" alt="Kodegen AI Banner" width="100%" />
+</div>
+
 # kodegen-bundler-release
 
 **Production-quality release management and multi-platform bundling for Rust workspaces.**
