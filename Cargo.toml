@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_bundler_release"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -22,15 +22,18 @@ name = "kodegen_bundler_release"
 path = "src/main.rs"
 
 [dependencies]
+# Configuration path resolution
+kodegen_config = { version = "0.4" }
+
 # Shared Git operations package (provides all Git functionality)
 # Using local development version with HTTPS support and introspection APIs
-kodegen_tools_git = { version = "0.3" }
+kodegen_tools_git = { version = "0.4" }
 
 # GitHub API integration for releases
-kodegen_tools_github = { version = "0.3" }
+kodegen_tools_github = { version = "0.4" }
 
 # Code signing for macOS artifacts
-kodegen_bundler_sign = { version = "0.3" }
+kodegen_bundler_sign = { version = "0.4" }
 
 # Binary content for asset upload
 bytes = "1"

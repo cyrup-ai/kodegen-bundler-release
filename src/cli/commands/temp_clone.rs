@@ -4,8 +4,9 @@
 //! directory for isolated release operations, and track active temp paths.
 
 use crate::error::{CliError, ReleaseError, Result};
-use std::path::PathBuf;
+use kodegen_config::KodegenConfig;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use sysinfo::{System, Pid};
 
 /// Get origin URL from current workspace for cloning
@@ -107,15 +108,14 @@ struct ReleaseTracking {
 /// Creates tracking file at `~/.kodegen/active_releases/{pid}.json`
 /// enabling concurrent releases and automatic stale cleanup.
 pub(super) fn save_active_temp_path(temp_dir: &std::path::Path) -> Result<()> {
-    let config_dir = dirs::home_dir()
-        .ok_or_else(|| {
+    let config_dir = KodegenConfig::state_dir()
+        .map(|dir| dir.join("active_releases"))
+        .map_err(|e| {
             ReleaseError::Cli(CliError::ExecutionFailed {
-                command: "get_home_dir".to_string(),
-                reason: "Could not determine home directory".to_string(),
+                command: "get_state_dir".to_string(),
+                reason: e.to_string(),
             })
-        })?
-        .join(".kodegen")
-        .join("active_releases");  // ✅ NEW: Subdirectory for PID files
+        })?;
 
     std::fs::create_dir_all(&config_dir).map_err(|e| {
         ReleaseError::Cli(CliError::ExecutionFailed {
@@ -167,8 +167,8 @@ pub(super) fn save_active_temp_path(temp_dir: &std::path::Path) -> Result<()> {
 /// Automatically cleans up stale tracking if path doesn't exist.
 #[allow(dead_code)]
 pub(super) fn get_active_temp_path() -> Option<PathBuf> {
-    let config_dir = dirs::home_dir()?
-        .join(".kodegen")
+    let config_dir = KodegenConfig::state_dir()
+        .ok()?
         .join("active_releases");
     
     if !config_dir.exists() {
@@ -202,10 +202,9 @@ pub(super) fn get_active_temp_path() -> Option<PathBuf> {
 /// Removes `~/.kodegen/active_releases/{pid}.json` for current PID.
 /// Safe to call multiple times (idempotent).
 pub(super) fn clear_active_temp_path() -> Result<()> {
-    if let Some(home_dir) = dirs::home_dir() {
+    if let Ok(state_dir) = KodegenConfig::state_dir() {
         let current_pid = std::process::id();
-        let tracking_file = home_dir
-            .join(".kodegen")
+        let tracking_file = state_dir
             .join("active_releases")
             .join(format!("{}.json", current_pid));  // ✅ NEW: PID-based
         
@@ -234,9 +233,9 @@ pub(super) fn clear_active_temp_path() -> Result<()> {
 /// - `Ok(usize)` - Number of stale releases cleaned up
 /// - `Err(_)` - If cleanup operations fail critically
 pub(super) fn cleanup_stale_tracking() -> Result<usize> {
-    let config_dir = match dirs::home_dir() {
-        Some(home) => home.join(".kodegen").join("active_releases"),
-        None => return Ok(0),  // Can't determine home, skip cleanup
+    let config_dir = match KodegenConfig::state_dir() {
+        Ok(state) => state.join("active_releases"),
+        Err(_) => return Ok(0),  // Can't determine state dir, skip cleanup
     };
     
     if !config_dir.exists() {
