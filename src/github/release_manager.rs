@@ -98,7 +98,61 @@ impl GitHubReleaseManager {
         Ok(Self { client, config })
     }
 
-    /// Create a GitHub release
+    /// Create a GitHub release from an existing tag
+    ///
+    /// Unlike `create_release`, this method does not require a commit SHA
+    /// because the tag already exists (created by `just publish`).
+    pub async fn create_release_from_tag(
+        &self,
+        version: &Version,
+        tag_name: &str,
+        release_notes: Option<String>,
+    ) -> Result<GitHubReleaseResult> {
+        // Determine if this should be a prerelease
+        let is_prerelease = if self.config.prerelease_for_zero_versions {
+            version.major == 0 || !version.pre.is_empty()
+        } else {
+            !version.pre.is_empty()
+        };
+
+        // Use provided release notes or custom notes from config
+        let body = release_notes
+            .or_else(|| self.config.notes.clone())
+            .or_else(|| Some(format!("Release version {}", version)));
+
+        let options = GitHubReleaseOptions {
+            tag_name: tag_name.to_string(),
+            target_commitish: None, // Tag already exists, no commit needed
+            name: Some(format!("Release {}", version)),
+            body,
+            draft: true, // Always create as draft, publish later
+            prerelease: is_prerelease,
+        };
+
+        let result = kodegen_tools_github::create_release(
+            self.client.inner().clone(),
+            &self.config.owner,
+            &self.config.repo,
+            options,
+        )
+        .await
+        .map_err(|e| {
+            ReleaseError::Cli(CliError::ExecutionFailed {
+                command: "create_github_release".to_string(),
+                reason: e.to_string(),
+            })
+        })?;
+
+        Ok(GitHubReleaseResult {
+            release_id: result.id,
+            html_url: result.html_url,
+            draft: result.draft,
+            prerelease: result.prerelease,
+        })
+    }
+
+    /// Create a GitHub release (with commit SHA)
+    #[allow(dead_code)]
     pub async fn create_release(
         &self,
         version: &Version,
@@ -256,24 +310,6 @@ impl GitHubReleaseManager {
         })?;
 
         Ok(())
-    }
-
-    /// Test GitHub API connection and authentication
-    ///
-    /// Calls /user endpoint to verify the token is valid before attempting
-    /// expensive operations like creating releases or uploading artifacts.
-    ///
-    /// This is a PRECHECK - called before Phase 3 to fail fast if authentication
-    /// is broken. Prevents wasting time on git operations when GitHub access will fail.
-    ///
-    /// # Returns
-    /// - `Ok(true)` - API connection successful, token is valid
-    /// - `Ok(false)` - API connection failed (invalid token, network error, or rate limit)
-    pub async fn test_connection(&self) -> Result<bool> {
-        match self.client.get_me().await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
     }
 
     /// Verify a release exists and is still a draft

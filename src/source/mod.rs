@@ -7,34 +7,8 @@ use std::sync::LazyLock;
 
 /// Repository source: local path or GitHub
 pub enum RepositorySource {
-    /// Local repository on disk at the given path
-    ///
-    /// # Example
-    /// ```no_run
-    /// use kodegen_bundler_release::source::RepositorySource;
-    /// use std::path::PathBuf;
-    ///
-    /// let source = RepositorySource::Local(PathBuf::from("/path/to/repo"));
-    /// ```
     Local(PathBuf),
-
-    /// GitHub repository specified by owner and repo name
-    ///
-    /// # Example
-    /// ```no_run
-    /// use kodegen_bundler_release::source::RepositorySource;
-    ///
-    /// let source = RepositorySource::GitHub {
-    ///     owner: "cyrup-ai".to_string(),
-    ///     repo: "kodegen".to_string(),
-    /// };
-    /// ```
-    GitHub {
-        /// GitHub username or organization name
-        owner: String,
-        /// Repository name
-        repo: String
-    },
+    GitHub { owner: String, repo: String },
 }
 
 impl RepositorySource {
@@ -43,11 +17,11 @@ impl RepositorySource {
         // Try as local path first
         let path = PathBuf::from(input);
         if path.exists() {
-            return path.canonicalize()
-                .map(Self::Local)
-                .map_err(|e| ReleaseError::Cli(CliError::InvalidArguments {
+            return path.canonicalize().map(Self::Local).map_err(|e| {
+                ReleaseError::Cli(CliError::InvalidArguments {
                     reason: format!("Failed to canonicalize path '{}': {}", input, e),
-                }));
+                })
+            });
         }
 
         // Try as GitHub URL: https://github.com/owner/repo
@@ -87,7 +61,6 @@ impl RepositorySource {
                 is_temp: false,
             }),
             Self::GitHub { owner, repo } => {
-                // ADAPT clone_main_to_temp_for_release from temp_clone.rs
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_err(|e| {
@@ -99,25 +72,31 @@ impl RepositorySource {
                     .as_secs();
 
                 let temp_dir = std::env::temp_dir().join(format!("kodegen-release-{}", timestamp));
-
                 let remote_url = format!("git@github.com:{}/{}.git", owner, repo);
-                let clone_opts =
-                    kodegen_tools_git::CloneOpts::new(remote_url, temp_dir.clone());
 
-                kodegen_tools_git::clone_repo(clone_opts)
+                // Clone using git command
+                let output = tokio::process::Command::new("git")
+                    .args([
+                        "clone",
+                        "--single-branch",
+                        &remote_url,
+                        temp_dir.to_str().unwrap(),
+                    ])
+                    .output()
                     .await
                     .map_err(|e| {
                         ReleaseError::Cli(CliError::ExecutionFailed {
-                            command: "clone_repo".to_string(),
-                            reason: format!("Failed to clone repository: {}", e),
-                        })
-                    })?
-                    .map_err(|e| {
-                        ReleaseError::Cli(CliError::ExecutionFailed {
-                            command: "clone_repo".to_string(),
+                            command: "git clone".to_string(),
                             reason: e.to_string(),
                         })
                     })?;
+
+                if !output.status.success() {
+                    return Err(ReleaseError::Cli(CliError::ExecutionFailed {
+                        command: "git clone".to_string(),
+                        reason: String::from_utf8_lossy(&output.stderr).to_string(),
+                    }));
+                }
 
                 Ok(ResolvedRepo {
                     path: temp_dir,
@@ -129,32 +108,8 @@ impl RepositorySource {
 }
 
 /// Resolved repository with automatic cleanup
-///
-/// If `is_temp` is true, the repository directory will be automatically
-/// deleted when this struct is dropped. This ensures temporary clones
-/// are cleaned up even if an error occurs.
-///
-/// # Example
-/// ```no_run
-/// use kodegen_bundler_release::source::ResolvedRepo;
-/// use std::path::PathBuf;
-///
-/// let repo = ResolvedRepo {
-///     path: PathBuf::from("/tmp/my-repo"),
-///     is_temp: true,  // Will be deleted on drop
-/// };
-/// // ... use repo.path ...
-/// // Automatically cleaned up here
-/// ```
 pub struct ResolvedRepo {
-    /// Absolute path to the repository root directory
     pub path: PathBuf,
-
-    /// Whether this is a temporary directory that should be cleaned up on drop
-    ///
-    /// If `true`, the directory at `path` will be recursively deleted when
-    /// this struct is dropped. Set to `false` for local repositories that
-    /// should persist.
     pub is_temp: bool,
 }
 
@@ -164,27 +119,20 @@ impl Drop for ResolvedRepo {
             return;
         }
 
-        // Try cleanup with brief retries for transient failures
         const MAX_RETRIES: u32 = 3;
         const RETRY_DELAY_MS: u64 = 100;
 
         for attempt in 0..MAX_RETRIES {
             match std::fs::remove_dir_all(&self.path) {
-                Ok(()) => return, // Success - cleanup complete
+                Ok(()) => return,
                 Err(_e) if attempt < MAX_RETRIES - 1 => {
-                    // Transient failure - retry after brief delay
-                    // (files may be briefly locked by OS indexing, etc.)
                     std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 }
                 Err(e) => {
-                    // Final attempt failed - warn user
                     eprintln!(
-                        "⚠ Warning: Failed to cleanup temporary repository after {} attempts.\n\
+                        "⚠ Warning: Failed to cleanup temporary repository.\n\
                          Path: {}\n\
-                         Error: {}\n\
-                         \n\
-                         This temporary directory may need manual cleanup to free disk space.",
-                        MAX_RETRIES,
+                         Error: {}",
                         self.path.display(),
                         e
                     );

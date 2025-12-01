@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_bundler_release"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -25,10 +25,6 @@ path = "src/main.rs"
 # Configuration path resolution
 kodegen_config = { version = "0.5" }
 
-# Shared Git operations package (provides all Git functionality)
-# Using local development version with HTTPS support and introspection APIs
-kodegen_tools_git = { version = "0.5" }
-
 # GitHub API integration for releases
 kodegen_tools_github = { version = "0.5" }
 
@@ -37,9 +33,6 @@ kodegen_bundler_sign = { version = "0.5" }
 
 # Binary content for asset upload
 bytes = "1"
-
-# Format-preserving TOML editing
-toml_edit = "0.23"
 
 # Semantic version parsing and manipulation
 semver = { version = "1", features = ["serde"] }
@@ -70,9 +63,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # Cross-platform process existence checking (stale tracking cleanup)
 sysinfo = "0.33"
 
-# Dependency graph analysis
-petgraph = "0.8"
-
 # TOML parsing and manipulation
 toml = "0.9"
 
@@ -101,7 +91,7 @@ sha2 = "0.10"
 # Terminal colors
 cyrup_termcolor = "2"
 
-# Regular expressions (source parsing, publish retry logic)
+# Regular expressions (source parsing)
 regex = "1"
 
 # Glob pattern matching (workspace analysis)

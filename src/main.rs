@@ -1,17 +1,11 @@
-//! Cyrup Release - Production-quality release management for Rust workspaces.
-//!
-//! This binary provides atomic release operations with proper error handling,
-//! automatic internal dependency version synchronization, and rollback capabilities.
+//! Release tool for creating GitHub releases with platform bundles.
 
 mod cli;
 mod error;
-mod git;
 mod github;
 mod metadata;
-mod publish;
 mod source;
 mod state;
-mod version;
 mod workspace;
 
 use cli::OutputManager;
