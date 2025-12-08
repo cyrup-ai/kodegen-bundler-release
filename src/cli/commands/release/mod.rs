@@ -8,6 +8,7 @@ mod r#impl;
 use crate::cli::{Args, RuntimeConfig};
 use crate::error::{CliError, ReleaseError, Result};
 use crate::EnvConfig;
+use kodegen_config::GIT_STATUS;
 
 /// Execute release command
 pub(super) async fn execute_release(
@@ -38,7 +39,7 @@ pub(super) async fn execute_release(
         .output()
         .map_err(|e| {
             ReleaseError::Cli(CliError::ExecutionFailed {
-                command: "git_status".to_string(),
+                command: GIT_STATUS.to_string(),
                 reason: e.to_string(),
             })
         })?;

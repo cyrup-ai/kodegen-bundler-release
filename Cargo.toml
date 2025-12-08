@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_bundler_release"
-version = "0.8.0"
+version = "0.10.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 authors = ["KODEGEN.ᴀɪ"]
@@ -23,9 +23,9 @@ path = "src/main.rs"
 
 [dependencies]
 # Configuration path resolution
-kodegen_config = { version = "0.8" }
-kodegen_tools_github = { version = "0.8" }
-kodegen_bundler_sign = { version = "0.8" }
+kodegen_config = { version = "0.10" }
+kodegen_tools_github = { version = "0.10" }
+kodegen_bundler_sign = { version = "0.10" }
 
 # Binary content for asset upload
 bytes = "1"
