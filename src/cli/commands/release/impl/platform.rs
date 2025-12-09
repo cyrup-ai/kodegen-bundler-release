@@ -119,20 +119,110 @@ pub fn construct_output_filename(
     Ok(filename)
 }
 
-/// Ensure bundler binary is installed from GitHub
+/// Get installed binary version by running `binary --version`
+async fn get_installed_version(binary_name: &str) -> Option<String> {
+    let output = tokio::process::Command::new(binary_name)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Parse version using regex (matches semantic versions like 0.10.0)
+    let re = regex::Regex::new(r"\b(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)\b").ok()?;
+    re.captures(&stdout)
+        .and_then(|cap| cap.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Get latest version from crates.io API
+async fn get_crates_io_version(crate_name: &str) -> Option<String> {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct CratesIoResponse {
+        #[serde(rename = "crate")]
+        crate_data: CrateData,
+    }
+
+    #[derive(Deserialize)]
+    struct CrateData {
+        max_version: String,
+    }
+
+    let url = format!("https://crates.io/api/v1/crates/{}", crate_name);
+    let client = reqwest::Client::builder()
+        .user_agent("kodegen_bundler_release")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    let response = client.get(&url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let data: CratesIoResponse = response.json().await.ok()?;
+    Some(data.crate_data.max_version)
+}
+
+/// Ensure bundler binary is installed from crates.io
 ///
-/// Uses cargo install to fetch from GitHub. Cargo automatically:
-/// - Checks GitHub for new commits (~0.7s)
-/// - Skips if already up-to-date
-/// - Rebuilds only if new commits exist
+/// Smart installation logic (same as kodegend):
+/// 1. Check if kodegen_bundler_bundle is installed locally
+/// 2. Get its version and compare with latest on crates.io
+/// 3. Only install/update if local version is missing or older
+///
+/// This avoids unnecessary reinstalls during development.
 pub async fn ensure_bundler_installed(ctx: &ReleasePhaseContext<'_>) -> Result<std::path::PathBuf> {
-    ctx.config.verbose_println("   Checking bundler installation from GitHub...").expect("Failed to write to stdout");
+    let binary_name = "kodegen_bundler_bundle";
+
+    // Get installed version
+    let installed_version = get_installed_version(binary_name).await;
+
+    // Get latest crates.io version
+    let latest_version = get_crates_io_version(binary_name).await;
+
+    let needs_install = match (&installed_version, &latest_version) {
+        (None, _) => {
+            ctx.config.verbose_println(&format!("   {} not found, installing...", binary_name)).expect("Failed to write to stdout");
+            true
+        }
+        (Some(_), None) => {
+            ctx.config.verbose_println("   Could not check crates.io, using installed version").expect("Failed to write to stdout");
+            false // Can't check crates.io, assume installed is OK
+        }
+        (Some(installed), Some(latest)) => {
+            use semver::Version;
+            match (Version::parse(installed), Version::parse(latest)) {
+                (Ok(inst_ver), Ok(lat_ver)) => {
+                    if inst_ver >= lat_ver {
+                        ctx.config.verbose_println(&format!("   ✓ Bundler already installed: v{}", installed)).expect("Failed to write to stdout");
+                        false
+                    } else {
+                        ctx.config.verbose_println(&format!("   Updating bundler: v{} → v{}", installed, latest)).expect("Failed to write to stdout");
+                        true
+                    }
+                }
+                _ => false, // Parse error, assume installed is OK
+            }
+        }
+    };
+
+    if !needs_install {
+        return Ok(std::path::PathBuf::from(binary_name));
+    }
+
+    // Install from crates.io
+    ctx.config.verbose_println(&format!("   Installing {} from crates.io...", binary_name)).expect("Failed to write to stdout");
 
     let install_status = std::process::Command::new("cargo")
         .arg("install")
-        .arg("--git")
-        .arg("https://github.com/cyrup-ai/kodegen-bundler-bundle")
-        .arg("kodegen_bundler_bundle")
+        .arg(binary_name)
         .status()
         .map_err(|e| ReleaseError::Cli(CliError::ExecutionFailed {
             command: "cargo install bundler".to_string(),
@@ -146,10 +236,9 @@ pub async fn ensure_bundler_installed(ctx: &ReleasePhaseContext<'_>) -> Result<s
         }));
     }
 
-    ctx.config.verbose_println("   ✓ Bundler ready").expect("Failed to write to stdout");
+    ctx.config.verbose_println("   ✓ Bundler installed successfully").expect("Failed to write to stdout");
 
-    // Return command name - cargo install puts it in PATH
-    Ok(std::path::PathBuf::from("kodegen_bundler_bundle"))
+    Ok(std::path::PathBuf::from(binary_name))
 }
 
 /// Bundle a platform by invoking kodegen_bundler_bundle binary
